@@ -1,0 +1,35 @@
+logger:
+  level: info
+  output_paths:
+    - stdout
+
+discord:
+  token: ""
+  guild_id: ""
+  command_channel: "bot-commands"
+  report_channel: "key-reports"
+
+raiderio:
+  base_url: https://raider.io
+  user_agent: celestial-orrey/1.0
+  poll_interval: 5m
+  max_concurrent: 4
+
+store:
+  path: data/celestial_orrey.db
+
+warcraftlogs:
+  client_id: ""
+  client_secret: ""
+  guild_name: ""
+  server_slug: ""
+  server_region: ""
+  limit: 50
+
+characters:
+  - name: Askr
+    realm: Mal'Ganis
+    region: us
+  - name: Askrm
+    realm: Mal'Ganis
+    region: us
