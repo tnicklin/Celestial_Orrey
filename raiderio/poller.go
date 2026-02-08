@@ -13,6 +13,7 @@ import (
 	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
+	"github.com/tnicklin/celestial_orrey/warcraftlogs"
 )
 
 var _ Poller = (*DefaultPoller)(nil)
@@ -21,24 +22,22 @@ var _ Poller = (*DefaultPoller)(nil)
 type DefaultPoller struct {
 	client        rioClient.Client
 	store         store.Store
+	wclLinker     *warcraftlogs.Linker
 	characters    []models.Character
 	interval      time.Duration
 	maxConcurrent int
 	logger        logger.Logger
-	onNewKey      func(ctx context.Context, key models.CompletedKey)
-	onAnnounce    func(ctx context.Context, message string)
 	rng           *rand.Rand
 }
 
 // Params holds configuration for creating a new Poller.
 type Params struct {
 	Config     Config
-	Client     rioClient.Client // optional, for testing; if nil, created from Config
+	Client     rioClient.Client
 	Store      store.Store
+	WCLLinker  *warcraftlogs.Linker
 	Characters []models.Character
 	Logger     logger.Logger
-	OnNewKey   func(ctx context.Context, key models.CompletedKey)
-	OnAnnounce func(ctx context.Context, message string)
 }
 
 // New creates a new DefaultPoller with the given parameters.
@@ -62,12 +61,11 @@ func New(p Params) *DefaultPoller {
 	return &DefaultPoller{
 		client:        client,
 		store:         p.Store,
+		wclLinker:     p.WCLLinker,
 		characters:    p.Characters,
 		interval:      p.Config.PollInterval,
 		maxConcurrent: p.Config.MaxConcurrent,
 		logger:        log,
-		onNewKey:      p.OnNewKey,
-		onAnnounce:    p.OnAnnounce,
 		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
@@ -89,6 +87,7 @@ func (p *DefaultPoller) Start(ctx context.Context) error {
 		"characters", len(p.characters),
 		"interval", p.interval.String(),
 		"max_concurrent", p.maxConcurrent,
+		"wcl_linker_configured", p.wclLinker != nil,
 	)
 
 	sem := make(chan struct{}, p.maxConcurrent)
@@ -286,14 +285,8 @@ func (p *DefaultPoller) pollOnce(ctx context.Context, character models.Character
 			"key_id", key.KeyID,
 		)
 
-		if p.onNewKey != nil {
-			p.onNewKey(ctx, key)
-		}
-
-		if p.onAnnounce != nil {
-			msg := formatAnnouncement(key)
-			p.onAnnounce(ctx, msg)
-		}
+		// Attempt WCL linking for new key
+		p.linkToWCL(ctx, key)
 
 		known[keyID] = struct{}{}
 		newKeysCount++
@@ -309,6 +302,60 @@ func (p *DefaultPoller) pollOnce(ctx context.Context, character models.Character
 	)
 
 	return nil
+}
+
+// linkToWCL attempts to link a newly detected key to WarcraftLogs.
+func (p *DefaultPoller) linkToWCL(ctx context.Context, key models.CompletedKey) {
+	if p.wclLinker == nil {
+		return
+	}
+
+	p.logger.InfoW("attempting WCL link for new key",
+		"character", key.Character,
+		"dungeon", key.Dungeon,
+		"level", key.KeyLevel,
+		"key_id", key.KeyID,
+	)
+
+	match, err := p.wclLinker.MatchKey(ctx, key)
+	if err != nil {
+		p.logger.WarnW("WCL match error",
+			"key_id", key.KeyID,
+			"error", err,
+		)
+		return
+	}
+	if match == nil {
+		p.logger.DebugW("no WCL match found for new key",
+			"key_id", key.KeyID,
+			"dungeon", key.Dungeon,
+		)
+		return
+	}
+
+	url := warcraftlogs.BuildMythicPlusURL(match.Run)
+	fightID := int64(match.Run.FightID)
+
+	link := store.WarcraftLogsLink{
+		KeyID:      key.KeyID,
+		ReportCode: match.Run.ReportCode,
+		FightID:    &fightID,
+		URL:        url,
+	}
+	if err := p.store.UpsertWarcraftLogsLink(ctx, link); err != nil {
+		p.logger.WarnW("failed to store WCL link",
+			"key_id", key.KeyID,
+			"error", err,
+		)
+		return
+	}
+
+	p.logger.InfoW("WCL link created for new key",
+		"key_id", key.KeyID,
+		"report_code", match.Run.ReportCode,
+		"url", url,
+		"confidence", match.Confidence,
+	)
 }
 
 func formatAnnouncement(key models.CompletedKey) string {

@@ -571,7 +571,6 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 	}
 
 	sb.WriteString("```")
-	sb.WriteString("`Thresholds: 1, 4, 8 keys | Yellow=Hero, Green=Myth`")
 
 	return sb.String(), nil
 }
@@ -675,8 +674,6 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 	if !hasKeys {
 		return "No keys completed this week yet.", nil
 	}
-
-	sb.WriteString("`Thresholds: 1, 4, 8 keys | Yellow=Hero, Green=Myth`")
 
 	return sb.String(), nil
 }
@@ -918,7 +915,11 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 	// Link WarcraftLogs if available
 	linkedCount := 0
 	if c.warcraftLogs != nil {
-		linker := warcraftlogs.NewLinker(c.store, c.warcraftLogs, warcraftlogs.ReportFilter{}, c.logger)
+		linker := warcraftlogs.NewLinker(warcraftlogs.LinkerParams{
+			Store:  c.store,
+			Client: c.warcraftLogs,
+			Logger: c.logger,
+		})
 		linker.MatchWindow = 24 * time.Hour // Aggressive: 24 hour window for matching
 
 		c.logger.InfoW("starting WCL linking",

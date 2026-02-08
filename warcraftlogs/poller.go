@@ -119,8 +119,12 @@ func (p *DefaultPoller) run(ctx context.Context) {
 func (p *DefaultPoller) pollOnce(ctx context.Context) {
 	cutoff := timeutil.WeeklyReset()
 
+	// Use time since weekly reset as match window (plus buffer)
+	matchWindow := time.Since(cutoff) + 24*time.Hour
+
 	p.logger.DebugW("WCL poller: checking for unlinked keys",
 		"cutoff", cutoff.Format(time.RFC3339),
+		"match_window", matchWindow,
 	)
 
 	keys, err := p.store.ListUnlinkedKeysSince(ctx, cutoff)
@@ -138,8 +142,12 @@ func (p *DefaultPoller) pollOnce(ctx context.Context) {
 		"count", len(keys),
 	)
 
-	linker := NewLinker(p.store, p.client, ReportFilter{}, p.logger)
-	linker.MatchWindow = p.matchWindow
+	linker := NewLinker(LinkerParams{
+		Store:  p.store,
+		Client: p.client,
+		Logger: p.logger,
+	})
+	linker.MatchWindow = matchWindow
 
 	linkedCount := 0
 	for _, key := range keys {

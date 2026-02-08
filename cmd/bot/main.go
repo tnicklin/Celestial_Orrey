@@ -16,7 +16,7 @@ import (
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
 	"github.com/tnicklin/celestial_orrey/raiderio"
-	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
+	raiderioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/warcraftlogs"
 	"go.uber.org/config"
@@ -46,7 +46,7 @@ type result struct {
 	Config        appConfig
 	Logger        logger.Logger
 	Store         *store.SQLiteStore
-	RaiderIO      rioClient.Client
+	RaiderIO      raiderioClient.Client
 	RIOPoller     raiderio.Poller
 	WarcraftLogs  warcraftlogs.WCL
 	WCLPoller     warcraftlogs.Poller
@@ -69,38 +69,45 @@ func build() (result, error) {
 		Logger: appLogger,
 	})
 
-	rio := rioClient.New(rioClient.Params{
-		BaseURL:    cfg.RaiderIO.BaseURL,
-		UserAgent:  cfg.RaiderIO.UserAgent,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-		Logger:     appLogger,
-	})
-	rioPoller := raiderio.New(raiderio.Params{
-		Config:     cfg.RaiderIO,
-		Client:     rio,
-		Store:      st,
-		Characters: cfg.Characters,
-		Logger:     appLogger,
-	})
-
 	wclClient := warcraftlogs.New(warcraftlogs.Params{
 		ClientID:     cfg.WarcraftLogs.ClientID,
 		ClientSecret: cfg.WarcraftLogs.ClientSecret,
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 	})
 
+	wclLinker := warcraftlogs.NewLinker(warcraftlogs.LinkerParams{
+		Store:  st,
+		Client: wclClient,
+		Logger: appLogger,
+	})
+
+	rioClient := raiderioClient.New(raiderioClient.Params{
+		BaseURL:    cfg.RaiderIO.BaseURL,
+		UserAgent:  cfg.RaiderIO.UserAgent,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		Logger:     appLogger,
+	})
+
+	rioPoller := raiderio.New(raiderio.Params{
+		Config:     cfg.RaiderIO,
+		Client:     rioClient,
+		Store:      st,
+		WCLLinker:  wclLinker,
+		Characters: cfg.Characters,
+		Logger:     appLogger,
+	})
+
 	wclPoller := warcraftlogs.NewPoller(warcraftlogs.PollerParams{
-		Store:       st,
-		Client:      wclClient,
-		Logger:      appLogger,
-		Interval:    5 * time.Minute,
-		MatchWindow: 24 * time.Hour,
+		Store:    st,
+		Client:   wclClient,
+		Logger:   appLogger,
+		Interval: 5 * time.Minute,
 	})
 
 	discordClient, err := discord.New(discord.Params{
 		Config:       cfg.Discord,
 		Store:        st,
-		RaiderIO:     rio,
+		RaiderIO:     rioClient,
 		WarcraftLogs: wclClient,
 		Logger:       appLogger,
 	})
@@ -113,7 +120,7 @@ func build() (result, error) {
 		Logger:        appLogger,
 		DiscordClient: discordClient,
 		Store:         st,
-		RaiderIO:      rio,
+		RaiderIO:      rioClient,
 		RIOPoller:     rioPoller,
 		WarcraftLogs:  wclClient,
 		WCLPoller:     wclPoller,
@@ -190,11 +197,10 @@ func loadConfig(dir string) (appConfig, error) {
 	}
 
 	var cfg appConfig
-	if err := provider.Get(config.Root).Populate(&cfg); err != nil {
+	if err = provider.Get(config.Root).Populate(&cfg); err != nil {
 		return appConfig{}, err
 	}
 
-	// Normalize all character names/realms/regions to lowercase
 	for i := range cfg.Characters {
 		cfg.Characters[i].Name = strings.ToLower(cfg.Characters[i].Name)
 		cfg.Characters[i].Realm = strings.ToLower(cfg.Characters[i].Realm)

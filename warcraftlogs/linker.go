@@ -25,16 +25,20 @@ type Linker struct {
 	DungeonMatch func(dungeon, zone string) bool
 }
 
-func NewLinker(st store.Store, client WCL, filter ReportFilter, log logger.Logger) *Linker {
-	if log == nil {
-		log = logger.NewNop()
-	}
+type LinkerParams struct {
+	Store  store.Store
+	Client WCL
+	Filter ReportFilter
+	Logger logger.Logger
+}
+
+func NewLinker(p LinkerParams) *Linker {
 	return &Linker{
-		Store:       st,
-		Client:      client,
-		Filter:      filter,
-		Logger:      log,
-		MatchWindow: 6 * time.Hour,
+		Store:       p.Store,
+		Client:      p.Client,
+		Filter:      p.Filter,
+		Logger:      p.Logger,
+		MatchWindow: time.Since(timeutil.WeeklyReset()) + 24*time.Hour,
 		PreBuffer:   15 * time.Minute,
 		PostBuffer:  30 * time.Minute,
 		DungeonMatch: func(dungeon, zone string) bool {

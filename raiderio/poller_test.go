@@ -56,6 +56,9 @@ func (f *fakeStore) GetCharacter(ctx context.Context, name, realm, region string
 func (f *fakeStore) DeleteCharacter(ctx context.Context, name, realm, region string) error {
 	return nil
 }
+func (f *fakeStore) ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error) {
+	return nil, nil
+}
 
 func TestPollerFiltersAndAnnounces(t *testing.T) {
 	// Use a fixed cutoff time for testing
@@ -90,15 +93,11 @@ func TestPollerFiltersAndAnnounces(t *testing.T) {
 		},
 	}}
 	st := &fakeStore{}
-	var announced []string
 
 	poller := New(Params{
 		Client:     client,
 		Store:      st,
 		Characters: []models.Character{{Region: "us", Realm: "illidan", Name: "Arthas"}},
-		OnAnnounce: func(ctx context.Context, msg string) {
-			announced = append(announced, msg)
-		},
 	})
 
 	known := map[string]struct{}{}
@@ -108,9 +107,6 @@ func TestPollerFiltersAndAnnounces(t *testing.T) {
 	}
 	if len(st.seen) != 1 {
 		t.Fatalf("expected 1 stored key, got %d", len(st.seen))
-	}
-	if len(announced) != 1 {
-		t.Fatalf("expected 1 announcement, got %d", len(announced))
 	}
 }
 

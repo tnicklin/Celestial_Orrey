@@ -285,38 +285,16 @@ func TestMinMaxCompletedAt(t *testing.T) {
 }
 
 func TestNewLinker(t *testing.T) {
-	tests := []struct {
-		name           string
-		st             interface{}
-		client         WCL
-		filter         ReportFilter
-		wantWindow     time.Duration
-		wantPreBuffer  time.Duration
-		wantPostBuffer time.Duration
-	}{
-		{
-			name:           "default values",
-			st:             nil,
-			client:         nil,
-			filter:         ReportFilter{},
-			wantWindow:     6 * time.Hour,
-			wantPreBuffer:  15 * time.Minute,
-			wantPostBuffer: 30 * time.Minute,
-		},
-	}
+	linker := NewLinker(LinkerParams{})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			linker := NewLinker(nil, tt.client, tt.filter, nil)
-			if linker.MatchWindow != tt.wantWindow {
-				t.Errorf("MatchWindow = %v, want %v", linker.MatchWindow, tt.wantWindow)
-			}
-			if linker.PreBuffer != tt.wantPreBuffer {
-				t.Errorf("PreBuffer = %v, want %v", linker.PreBuffer, tt.wantPreBuffer)
-			}
-			if linker.PostBuffer != tt.wantPostBuffer {
-				t.Errorf("PostBuffer = %v, want %v", linker.PostBuffer, tt.wantPostBuffer)
-			}
-		})
+	// MatchWindow is now dynamic based on weekly reset, just verify it's reasonable
+	if linker.MatchWindow < 24*time.Hour {
+		t.Errorf("MatchWindow = %v, expected at least 24 hours", linker.MatchWindow)
+	}
+	if linker.PreBuffer != 15*time.Minute {
+		t.Errorf("PreBuffer = %v, want %v", linker.PreBuffer, 15*time.Minute)
+	}
+	if linker.PostBuffer != 30*time.Minute {
+		t.Errorf("PostBuffer = %v, want %v", linker.PostBuffer, 30*time.Minute)
 	}
 }
