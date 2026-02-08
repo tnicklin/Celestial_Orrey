@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -276,6 +277,11 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, name string, s
 		return fmt.Sprintf("No character found with name **%s**.", name), nil
 	}
 
+	// Sort by realm for deterministic output
+	sort.Slice(matchingChars, func(i, j int) bool {
+		return matchingChars[i].Realm < matchingChars[j].Realm
+	})
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**Keys since reset** (Week of %s)\n\n", since.Format("Jan 2")))
 
@@ -318,6 +324,11 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 		c.logger.ErrorW("failed to list characters", "error", err)
 		return "", err
 	}
+
+	// Sort characters by name for deterministic output
+	sort.Slice(allChars, func(i, j int) bool {
+		return allChars[i].Name < allChars[j].Name
+	})
 
 	c.logger.DebugW("listed characters",
 		"count", len(allChars),
@@ -399,14 +410,20 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 	}
 	sb.WriteString(fmt.Sprintf("**%s** (%s) — %d %s\n", char.Name, char.Realm, len(keys), keyWord))
 
-	// Compact inline format: +14 Ara-Kara • +13 Eco-Dome • +12 Priory
-	var parts []string
+	// Compact list format with WCL links
 	for _, key := range keys {
 		dungeonShort := shortenDungeonName(key.Dungeon)
-		parts = append(parts, fmt.Sprintf("+%d %s", key.KeyLevel, dungeonShort))
+
+		// Get WCL link if available
+		wclLink := ""
+		links, err := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
+		if err == nil && len(links) > 0 {
+			wclLink = fmt.Sprintf(" [log](%s)", links[0].URL)
+		}
+
+		sb.WriteString(fmt.Sprintf("• +%d %s%s\n", key.KeyLevel, dungeonShort, wclLink))
 	}
-	sb.WriteString(strings.Join(parts, " • "))
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
 }
 
 func (c *DefaultDiscord) generateKeysReport(ctx context.Context, start, end time.Time, title string) (string, error) {
@@ -418,6 +435,11 @@ func (c *DefaultDiscord) generateKeysReport(ctx context.Context, start, end time
 	if err != nil {
 		return "", err
 	}
+
+	// Sort characters by name for deterministic output
+	sort.Slice(allChars, func(i, j int) bool {
+		return allChars[i].Name < allChars[j].Name
+	})
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**%s**\n\n", title))
@@ -495,6 +517,11 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return fmt.Sprintf("No character found with name **%s**.", name), nil
 	}
 
+	// Sort by realm for deterministic output
+	sort.Slice(matchingChars, func(i, j int) bool {
+		return matchingChars[i].Realm < matchingChars[j].Realm
+	})
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**Great Vault Progress** (Week of %s)\n", since.Format("Jan 2")))
 	sb.WriteString("```ansi\n")
@@ -532,6 +559,11 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		c.logger.ErrorW("failed to list characters", "error", err)
 		return "", err
 	}
+
+	// Sort characters by name for deterministic output
+	sort.Slice(allChars, func(i, j int) bool {
+		return allChars[i].Name < allChars[j].Name
+	})
 
 	c.logger.DebugW("listed characters for report",
 		"count", len(allChars),
