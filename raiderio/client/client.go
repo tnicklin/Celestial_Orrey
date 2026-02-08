@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
@@ -128,9 +129,9 @@ func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Ch
 	for _, run := range payload.WeeklyRuns {
 		key := models.CompletedKey{
 			KeyID:       run.MythicPlusRunID,
-			Character:   character.Name,
-			Region:      character.Region,
-			Realm:       character.Realm,
+			Character:   strings.ToLower(character.Name),
+			Region:      strings.ToLower(character.Region),
+			Realm:       strings.ToLower(character.Realm),
 			Dungeon:     run.Dungeon,
 			KeyLevel:    run.KeystoneLevel,
 			RunTimeMS:   run.ClearTimeMS,

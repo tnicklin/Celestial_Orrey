@@ -260,9 +260,9 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 	var characterID int64
 	queries := db.New(tx)
 	characterID, err = queries.UpsertCharacter(ctx, db.UpsertCharacterParams{
-		Region: key.Region,
-		Realm:  key.Realm,
-		Name:   key.Character,
+		Region: strings.ToLower(key.Region),
+		Realm:  strings.ToLower(key.Realm),
+		Name:   strings.ToLower(key.Character),
 	})
 	if err != nil {
 		_ = tx.Rollback()
@@ -399,14 +399,15 @@ func (s *SQLiteStore) ListKeysByCharacterSince(ctx context.Context, character st
 		return nil, errors.New("store is not open")
 	}
 
+	characterLower := strings.ToLower(character)
 	s.log().DebugW("listing keys by character since",
-		"character", character,
+		"character", characterLower,
 		"cutoff", cutoff.Format(time.RFC3339),
 	)
 
 	queries := db.New(s.db)
 	rows, err := queries.ListKeysByCharacterSince(ctx, db.ListKeysByCharacterSinceParams{
-		LOWER:       character,
+		LOWER:       characterLower,
 		CompletedAt: cutoff.Format(time.RFC3339),
 	})
 	if err != nil {

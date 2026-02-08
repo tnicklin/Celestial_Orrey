@@ -177,5 +177,12 @@ func loadConfig(dir string) (appConfig, error) {
 		return appConfig{}, err
 	}
 
+	// Normalize all character names/realms/regions to lowercase
+	for i := range cfg.Characters {
+		cfg.Characters[i].Name = strings.ToLower(cfg.Characters[i].Name)
+		cfg.Characters[i].Realm = strings.ToLower(cfg.Characters[i].Realm)
+		cfg.Characters[i].Region = strings.ToLower(cfg.Characters[i].Region)
+	}
+
 	return cfg, nil
 }

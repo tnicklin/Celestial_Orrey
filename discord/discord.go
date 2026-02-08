@@ -847,7 +847,7 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 	}
 
 	char := models.Character{
-		Name:   args[0],
+		Name:   strings.ToLower(args[0]),
 		Realm:  strings.ToLower(args[1]),
 		Region: "us",
 	}
@@ -1001,7 +1001,7 @@ func (c *DefaultDiscord) cmdCharPurge(ctx context.Context, args []string) (strin
 		return "Usage: `!char purge <name> <realm>`\nExample: `!char purge Askrm malganis`\nUse realm slugs (e.g., area-52, burning-legion)", nil
 	}
 
-	name := args[0]
+	name := strings.ToLower(args[0])
 	realm := strings.ToLower(args[1])
 	region := "us"
 
