@@ -130,7 +130,7 @@ const insertCompletedKey = `-- name: InsertCompletedKey :exec
 INSERT INTO completed_keys(
   key_id, character_id, dungeon, key_lvl, run_time_ms, par_time_ms, completed_at, source
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(key_id) DO UPDATE SET
+ON CONFLICT(key_id, character_id) DO UPDATE SET
   dungeon = excluded.dungeon,
   key_lvl = excluded.key_lvl,
   run_time_ms = excluded.run_time_ms,
