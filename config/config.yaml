@@ -4,9 +4,9 @@ logger:
     - stdout
 
 discord:
-  guild_id: ""
-  command_channel: "bot-commands"
-  report_channel: "key-reports"
+  guild_id: "836026401823260733"
+  command_channel: "1326784974602637413"
+  report_channel: "1326784974602637413"
 
 raiderio:
   base_url: https://raider.io

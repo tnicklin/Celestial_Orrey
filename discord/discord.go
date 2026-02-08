@@ -57,7 +57,6 @@ func New(p Params) (*DefaultDiscord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
-	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
 
 	log := p.Logger
 	if log == nil {

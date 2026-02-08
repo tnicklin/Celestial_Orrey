@@ -1,6 +1,6 @@
 .idea/*
 /docs/*
 
-/secrets.yaml
+config/secrets.yaml
 data/
 *.db

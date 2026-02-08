@@ -47,6 +47,7 @@ type result struct {
 	Logger        logger.Logger
 	Store         *store.SQLiteStore
 	RaiderIO      rioClient.Client
+	RIOPoller     raiderio.Poller
 	WarcraftLogs  warcraftlogs.WCL
 	DiscordClient discord.Discord
 }
@@ -62,10 +63,19 @@ func build() (result, error) {
 		return result{}, fmt.Errorf("initialize logger: %w", err)
 	}
 
+	st := store.NewSQLiteStore(cfg.Store.Path)
+
 	rio := rioClient.New(rioClient.Params{
 		BaseURL:    cfg.RaiderIO.BaseURL,
 		UserAgent:  cfg.RaiderIO.UserAgent,
-		HTTPClient: cfg.RaiderIO.HTTPClient,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+	})
+	rioPoller := raiderio.New(raiderio.Params{
+		Config:     cfg.RaiderIO,
+		Client:     rio,
+		Store:      st,
+		Characters: cfg.Characters,
+		Logger:     appLogger,
 	})
 
 	wclClient := warcraftlogs.New(warcraftlogs.Params{
@@ -73,8 +83,6 @@ func build() (result, error) {
 		ClientSecret: cfg.WarcraftLogs.ClientSecret,
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 	})
-
-	st := store.NewSQLiteStore(cfg.Store.Path)
 
 	discordClient, err := discord.New(discord.Params{
 		Config:       cfg.Discord,
@@ -93,6 +101,7 @@ func build() (result, error) {
 		DiscordClient: discordClient,
 		Store:         st,
 		RaiderIO:      rio,
+		RIOPoller:     rioPoller,
 		WarcraftLogs:  wclClient,
 	}, nil
 }
@@ -113,6 +122,10 @@ func run(r result) error {
 
 	if err := r.DiscordClient.Start(ctx); err != nil {
 		return fmt.Errorf("start discord client: %w", err)
+	}
+
+	if err := r.RIOPoller.Start(ctx); err != nil {
+		return fmt.Errorf("start rio poller: %w", err)
 	}
 
 	stop := make(chan os.Signal, 1)

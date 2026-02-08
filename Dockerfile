@@ -16,12 +16,12 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=America/Los_Angeles
 
-RUN useradd -r -u 10001 -g users appuser \
+RUN useradd -r -u 1000 -g users appuser \
     && mkdir -p /app/data /app/config /app/store/schema/migrations \
     && chown -R appuser:users /app
 
@@ -30,7 +30,7 @@ WORKDIR /app
 COPY --from=build /out/celestial-orrey /app/celestial-orrey
 COPY store/schema/migrations /app/store/schema/migrations
 COPY config/config.yaml /app/config/config.yaml
-COPY secrets.yaml /app/config/secrets.yaml
+COPY config/secrets.yaml /app/config/secrets.yaml
 
 USER appuser
 
