@@ -8,4 +8,3 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
-      - ./secrets.yaml:/app/config/secrets.yaml:ro
