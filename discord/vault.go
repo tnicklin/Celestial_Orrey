@@ -10,7 +10,32 @@ const (
 	ansiGray   = "\033[90m"
 )
 
-var VaultRewards = VaultRewardTable{
+// VaultRewards is the active vault reward table.
+// Switch between VaultRewardsPrepatch and VaultRewardsSeason1 as needed.
+var VaultRewards = VaultRewardsPrepatch
+
+// VaultRewardsPrepatch contains vault rewards for 12.0.0 prepatch.
+// M+ caps at +12 during prepatch with no additional rewards beyond.
+var VaultRewardsPrepatch = VaultRewardTable{
+	Season:      "Midnight Prepatch",
+	MaxKeyLevel: 12,
+
+	Thresholds: []VaultThreshold{
+		{10, 147, "Myth 1/6", "M1", true},
+		{7, 144, "Hero 4/6", "H4", false},
+		{6, 141, "Hero 3/6", "H3", false},
+		{4, 137, "Hero 2/6", "H2", false},
+		{2, 134, "Hero 1/6", "H1", false},
+	},
+	DefaultItemLevel:   134,
+	DefaultShortCode:   "H1",
+	DefaultIsMythTrack: false,
+}
+
+// VaultRewardsSeason1 contains vault rewards for Midnight Season 1.
+// Season starts March 24, 2026.
+// Source: https://www.wowhead.com/news/youll-want-to-complete-18s-to-get-the-best-mythic-loot-in-the-midnight-season-1-379659
+var VaultRewardsSeason1 = VaultRewardTable{
 	Season:      "Midnight Season 1",
 	MaxKeyLevel: 18,
 
