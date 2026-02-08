@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -135,15 +137,19 @@ func loadConfig(dir string) (appConfig, error) {
 		return appConfig{}, fmt.Errorf("read config dir: %w", err)
 	}
 
-	opts := make([]config.YAMLOption, 0, len(files))
+	var opts []config.YAMLOption
 	for _, f := range files {
-		if _, err := os.Stat(f); err == nil {
-			opts = append(opts, config.File(f))
+		if f.IsDir() {
+			continue
 		}
+		if !strings.HasSuffix(f.Name(), ".yaml") {
+			continue
+		}
+		path := filepath.Join(dir, f.Name())
+		opts = append(opts, config.File(path))
 	}
-
 	if len(opts) == 0 {
-		return appConfig{}, os.ErrNotExist
+		return appConfig{}, fmt.Errorf("no yaml files found in %q", dir)
 	}
 
 	provider, err := config.NewYAML(opts...)

@@ -4,7 +4,6 @@ logger:
     - stdout
 
 discord:
-  token: ""
   guild_id: ""
   command_channel: "bot-commands"
   report_channel: "key-reports"
@@ -19,8 +18,6 @@ store:
   path: data/celestial_orrey.db
 
 warcraftlogs:
-  client_id: ""
-  client_secret: ""
   guild_name: ""
   server_slug: ""
   server_region: ""

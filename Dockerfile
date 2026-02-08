@@ -21,28 +21,21 @@ RUN apt-get update \
 
 ENV TZ=America/Los_Angeles
 
-# Create app user and data directory
 RUN useradd -r -u 10001 -g users appuser \
     && mkdir -p /app/data /app/config /app/store/schema/migrations \
     && chown -R appuser:users /app
 
 WORKDIR /app
 
-# Copy binary
 COPY --from=build /out/celestial-orrey /app/celestial-orrey
-
-# Copy migrations (needed at runtime)
 COPY store/schema/migrations /app/store/schema/migrations
-
-# Copy default config (can be overridden by bind mount)
 COPY config/config.yaml /app/config/config.yaml
+COPY secrets.yaml /app/config/secrets.yaml
 
 USER appuser
 
-# Data volume for SQLite persistence
 VOLUME ["/app/data"]
 
-# Stop signal for graceful shutdown (ensures db flush)
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/app/celestial-orrey"]

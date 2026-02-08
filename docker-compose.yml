@@ -5,9 +5,7 @@ services:
     container_name: celestial-orrey
     restart: unless-stopped
     stop_grace_period: 35s
-    environment:
-      DISCORD_TOKEN: ${DISCORD_TOKEN}
-      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
+      - ./secrets.yaml:/app/config/secrets.yaml:ro
