@@ -915,8 +915,20 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 	c.logger.InfoW("keys upserted to database",
 		"character", char.Name,
 		"attempted", len(keys),
-		"inserted", insertedCount,
+		"successful", insertedCount,
 	)
+
+	// Verify keys were actually inserted
+	resetTime := timeutil.WeeklyReset()
+	verifyKeys, verifyErr := c.store.ListKeysByCharacterSince(ctx, char.Name, resetTime)
+	if verifyErr != nil {
+		c.logger.ErrorW("failed to verify inserted keys", "error", verifyErr)
+	} else {
+		c.logger.InfoW("verification: keys in DB after sync",
+			"character", char.Name,
+			"keys_in_db", len(verifyKeys),
+		)
+	}
 
 	// Link WarcraftLogs if available
 	linkedCount := 0
@@ -970,12 +982,13 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 	c.logger.InfoW("character sync complete",
 		"character", char.Name,
 		"realm", char.Realm,
-		"keys_imported", len(keys),
+		"keys_fetched", len(keys),
+		"keys_inserted", insertedCount,
 		"wcl_links_created", linkedCount,
 	)
 
-	return fmt.Sprintf("Synced **%s** (%s-%s): %d keys imported, %d WCL links created.",
-		char.Name, char.Realm, char.Region, len(keys), linkedCount), nil
+	return fmt.Sprintf("Synced **%s** (%s-%s): %d keys fetched, %d inserted, %d WCL links created.",
+		char.Name, char.Realm, char.Region, len(keys), insertedCount, linkedCount), nil
 }
 
 // cmdCharPurge removes a character and all their data from the database
