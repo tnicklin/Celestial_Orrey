@@ -248,70 +248,83 @@ func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (string, er
 
 	resetTime := timeutil.WeeklyReset()
 
-	if len(args) > 0 {
-		// Query for specific character name (across all realms)
-		characterName := args[0]
-		return c.formatCharacterKeys(ctx, characterName, resetTime)
+	if len(args) == 0 {
+		return "Usage: `!keys <character_name>` or `!keys all`\nExample: `!keys askrm` or `!keys all`", nil
 	}
 
-	// Query all characters
-	return c.formatAllCharacterKeys(ctx, resetTime)
+	// "all" shows all characters
+	if strings.ToLower(args[0]) == "all" {
+		return c.formatAllCharacterKeys(ctx, resetTime)
+	}
+
+	// Query for specific character name
+	return c.formatCharacterKeys(ctx, args[0], resetTime)
 }
 
-func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, name string, since time.Time) (string, error) {
-	// Get all characters with this name
+func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, since time.Time) (string, error) {
+	// Get all characters
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
 		return "", err
 	}
 
+	// Check if query is in "name-realm" format
 	var matchingChars []models.Character
-	nameLower := strings.ToLower(name)
+	queryLower := strings.ToLower(query)
+
+	// Try exact "name-realm" match first
 	for _, char := range allChars {
-		if strings.ToLower(char.Name) == nameLower {
+		charKey := strings.ToLower(char.Name + "-" + char.Realm)
+		if charKey == queryLower {
 			matchingChars = append(matchingChars, char)
 		}
 	}
 
+	// If no exact match, try name-only match
 	if len(matchingChars) == 0 {
-		return fmt.Sprintf("No character found with name **%s**.", name), nil
+		for _, char := range allChars {
+			if strings.ToLower(char.Name) == queryLower {
+				matchingChars = append(matchingChars, char)
+			}
+		}
 	}
 
-	// Sort by realm for deterministic output
-	sort.Slice(matchingChars, func(i, j int) bool {
-		return matchingChars[i].Realm < matchingChars[j].Realm
-	})
+	if len(matchingChars) == 0 {
+		return fmt.Sprintf("No character found matching **%s**.", query), nil
+	}
+
+	// Check for ambiguous character name (same name on different servers)
+	if len(matchingChars) > 1 {
+		var realms []string
+		for _, char := range matchingChars {
+			realms = append(realms, char.Realm)
+		}
+		return fmt.Sprintf("Ambiguous character name **%s** found on multiple realms: %s\nPlease use `!keys <name>-<realm>` to specify.", query, strings.Join(realms, ", ")), nil
+	}
+
+	char := matchingChars[0]
+	keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
+	if err != nil {
+		return "", err
+	}
+
+	// Filter to only this realm
+	var charKeys []models.CompletedKey
+	for _, key := range keys {
+		if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
+			charKeys = append(charKeys, key)
+		}
+	}
+
+	if len(charKeys) == 0 {
+		return fmt.Sprintf("No keys found for **%s** (%s) this week.", char.Name, char.Realm), nil
+	}
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**Keys since reset** (Week of %s)\n\n", since.Format("Jan 2")))
+	c.writeCharacterSection(ctx, &sb, char, charKeys)
 
-	for _, char := range matchingChars {
-		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
-		if err != nil {
-			continue
-		}
-
-		// Filter to only this realm
-		var charKeys []models.CompletedKey
-		for _, key := range keys {
-			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
-				charKeys = append(charKeys, key)
-			}
-		}
-
-		if len(charKeys) == 0 {
-			continue
-		}
-
-		c.writeCharacterSection(ctx, &sb, char, charKeys)
-	}
-
-	result := sb.String()
-	if result == fmt.Sprintf("**Keys since reset** (Week of %s)\n\n", since.Format("Jan 2")) {
-		return fmt.Sprintf("No keys found for **%s** this week.", name), nil
-	}
-
-	return result, nil
+	return sb.String(), nil
 }
 
 func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.Time) (string, error) {
@@ -726,8 +739,8 @@ func getVaultSlotColored(keys []models.CompletedKey, index int) string {
 func (c *DefaultDiscord) cmdHelp() string {
 	return `**Available Commands:**
 ` + "```" + `
-!keys           - Show all keys completed this week
-!keys <name>    - Show keys for a character (all realms)
+!keys <name>    - Show keys for a character
+!keys all       - Show all keys completed this week
 !report         - Show Great Vault progress for all characters
 !report <name>  - Show Great Vault progress for a character
 !help           - Show this help message
@@ -738,6 +751,7 @@ func (c *DefaultDiscord) cmdHelp() string {
 !char purge <name> <realm> - Remove character from database
 ` + "```" + `
 *Use realm slugs (e.g., area-52, burning-legion). Region defaults to US.*
+*For ambiguous names, use name-realm format (e.g., askr-mal-ganis)*
 *Automatic reports post at midnight (daily) and 8am (weekly progress) PST*`
 }
 
