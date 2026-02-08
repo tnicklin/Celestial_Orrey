@@ -39,5 +39,6 @@ type Store interface {
 	CountKeysByCharacterSince(ctx context.Context, cutoff time.Time) ([]CountRow, error)
 	ListKeysByCharacterSince(ctx context.Context, character string, cutoff time.Time) ([]models.CompletedKey, error)
 	ListKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error)
+	ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error)
 	ListWarcraftLogsLinksForKey(ctx context.Context, keyID int64) ([]WarcraftLogsLink, error)
 }

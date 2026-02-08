@@ -371,6 +371,63 @@ func (q *Queries) ListKeysSince(ctx context.Context, completedAt string) ([]List
 	return items, nil
 }
 
+const listUnlinkedKeysSince = `-- name: ListUnlinkedKeysSince :many
+SELECT DISTINCT k.key_id, c.region, c.realm, c.name AS character, k.dungeon, k.key_lvl,
+  k.run_time_ms, k.par_time_ms, k.completed_at, k.source
+FROM completed_keys k
+JOIN characters c ON c.id = k.character_id
+LEFT JOIN warcraftlogs_links w ON w.key_id = k.key_id
+WHERE k.completed_at > ? AND w.id IS NULL
+ORDER BY k.completed_at DESC
+`
+
+type ListUnlinkedKeysSinceRow struct {
+	KeyID       int64  `json:"key_id"`
+	Region      string `json:"region"`
+	Realm       string `json:"realm"`
+	Character   string `json:"character"`
+	Dungeon     string `json:"dungeon"`
+	KeyLvl      int64  `json:"key_lvl"`
+	RunTimeMs   int64  `json:"run_time_ms"`
+	ParTimeMs   int64  `json:"par_time_ms"`
+	CompletedAt string `json:"completed_at"`
+	Source      string `json:"source"`
+}
+
+func (q *Queries) ListUnlinkedKeysSince(ctx context.Context, completedAt string) ([]ListUnlinkedKeysSinceRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUnlinkedKeysSince, completedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnlinkedKeysSinceRow
+	for rows.Next() {
+		var i ListUnlinkedKeysSinceRow
+		if err := rows.Scan(
+			&i.KeyID,
+			&i.Region,
+			&i.Realm,
+			&i.Character,
+			&i.Dungeon,
+			&i.KeyLvl,
+			&i.RunTimeMs,
+			&i.ParTimeMs,
+			&i.CompletedAt,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertCharacter = `-- name: UpsertCharacter :one
 INSERT INTO characters(region, realm, name)
 VALUES (?, ?, ?)

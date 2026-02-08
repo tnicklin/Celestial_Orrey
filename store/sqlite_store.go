@@ -44,17 +44,17 @@ type SQLiteStore struct {
 	wg            sync.WaitGroup
 }
 
-func NewSQLiteStore(snapshotPath string) *SQLiteStore {
-	return &SQLiteStore{
-		snapshotPath:  snapshotPath,
-		flushDebounce: defaultDebounce,
-		logger:        nil, // Will use nop logging if not set
-	}
+type Params struct {
+	Path   string
+	Logger logger.Logger
 }
 
-// SetLogger sets the logger for the store.
-func (s *SQLiteStore) SetLogger(l logger.Logger) {
-	s.logger = l
+func NewSQLiteStore(p Params) *SQLiteStore {
+	return &SQLiteStore{
+		snapshotPath:  p.Path,
+		flushDebounce: defaultDebounce,
+		logger:        p.Logger,
+	}
 }
 
 func (s *SQLiteStore) log() logger.Logger {
@@ -461,6 +461,38 @@ func (s *SQLiteStore) ListKeysSince(ctx context.Context, cutoff time.Time) ([]mo
 
 	queries := db.New(s.db)
 	rows, err := queries.ListKeysSince(ctx, cutoff.Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]models.CompletedKey, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, models.CompletedKey{
+			KeyID:       row.KeyID,
+			Region:      row.Region,
+			Realm:       row.Realm,
+			Character:   row.Character,
+			Dungeon:     row.Dungeon,
+			KeyLevel:    int(row.KeyLvl),
+			RunTimeMS:   row.RunTimeMs,
+			ParTimeMS:   row.ParTimeMs,
+			CompletedAt: row.CompletedAt,
+			Source:      row.Source,
+		})
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.db == nil {
+		return nil, errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	rows, err := queries.ListUnlinkedKeysSince(ctx, cutoff.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}

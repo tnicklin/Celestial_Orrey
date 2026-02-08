@@ -10,7 +10,7 @@ import (
 
 func BenchmarkUpsertCompletedKey(b *testing.B) {
 	ctx := context.Background()
-	st := NewSQLiteStore("")
+	st := NewSQLiteStore(Params{})
 	st.SetFlushDebounce(1 * time.Hour) // Disable auto-flush for benchmark
 	if err := st.Open(ctx); err != nil {
 		b.Fatalf("open: %v", err)
@@ -40,7 +40,7 @@ func BenchmarkUpsertCompletedKey(b *testing.B) {
 
 func BenchmarkListKeysByCharacterSince(b *testing.B) {
 	ctx := context.Background()
-	st := NewSQLiteStore("")
+	st := NewSQLiteStore(Params{})
 	st.SetFlushDebounce(1 * time.Hour)
 	if err := st.Open(ctx); err != nil {
 		b.Fatalf("open: %v", err)
@@ -78,7 +78,7 @@ func BenchmarkListKeysByCharacterSince(b *testing.B) {
 
 func BenchmarkCountKeysByCharacterSince(b *testing.B) {
 	ctx := context.Background()
-	st := NewSQLiteStore("")
+	st := NewSQLiteStore(Params{})
 	st.SetFlushDebounce(1 * time.Hour)
 	if err := st.Open(ctx); err != nil {
 		b.Fatalf("open: %v", err)

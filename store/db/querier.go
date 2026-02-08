@@ -21,6 +21,7 @@ type Querier interface {
 	ListCharacters(ctx context.Context) ([]ListCharactersRow, error)
 	ListKeysByCharacterSince(ctx context.Context, arg ListKeysByCharacterSinceParams) ([]ListKeysByCharacterSinceRow, error)
 	ListKeysSince(ctx context.Context, completedAt string) ([]ListKeysSinceRow, error)
+	ListUnlinkedKeysSince(ctx context.Context, completedAt string) ([]ListUnlinkedKeysSinceRow, error)
 	ListWarcraftLogsLinksForKey(ctx context.Context, keyID int64) ([]ListWarcraftLogsLinksForKeyRow, error)
 	UpsertCharacter(ctx context.Context, arg UpsertCharacterParams) (int64, error)
 }

@@ -71,3 +71,12 @@ DELETE FROM completed_keys WHERE character_id = ?;
 
 -- name: DeleteCharacter :exec
 DELETE FROM characters WHERE id = ?;
+
+-- name: ListUnlinkedKeysSince :many
+SELECT DISTINCT k.key_id, c.region, c.realm, c.name AS character, k.dungeon, k.key_lvl,
+  k.run_time_ms, k.par_time_ms, k.completed_at, k.source
+FROM completed_keys k
+JOIN characters c ON c.id = k.character_id
+LEFT JOIN warcraftlogs_links w ON w.key_id = k.key_id
+WHERE k.completed_at > ? AND w.id IS NULL
+ORDER BY k.completed_at DESC;

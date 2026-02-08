@@ -14,7 +14,7 @@ func TestSQLiteStoreUpsertAndQuery(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "snapshot.db")
 
-	st := NewSQLiteStore(path)
+	st := NewSQLiteStore(Params{Path: path})
 	if err := st.Open(ctx); err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestSQLiteStoreRestoreFromDisk(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "snapshot.db")
 
-	st := NewSQLiteStore(path)
+	st := NewSQLiteStore(Params{Path: path})
 	if err := st.Open(ctx); err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestSQLiteStoreRestoreFromDisk(t *testing.T) {
 		t.Fatalf("shutdown: %v", err)
 	}
 
-	restored := NewSQLiteStore(path)
+	restored := NewSQLiteStore(Params{Path: path})
 	if err := restored.Open(ctx); err != nil {
 		t.Fatalf("open restore: %v", err)
 	}

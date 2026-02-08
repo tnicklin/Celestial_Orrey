@@ -49,6 +49,7 @@ type result struct {
 	RaiderIO      rioClient.Client
 	RIOPoller     raiderio.Poller
 	WarcraftLogs  warcraftlogs.WCL
+	WCLPoller     warcraftlogs.Poller
 	DiscordClient discord.Discord
 }
 
@@ -63,8 +64,10 @@ func build() (result, error) {
 		return result{}, fmt.Errorf("initialize logger: %w", err)
 	}
 
-	st := store.NewSQLiteStore(cfg.Store.Path)
-	st.SetLogger(appLogger)
+	st := store.NewSQLiteStore(store.Params{
+		Path:   cfg.Store.Path,
+		Logger: appLogger,
+	})
 
 	rio := rioClient.New(rioClient.Params{
 		BaseURL:    cfg.RaiderIO.BaseURL,
@@ -86,6 +89,14 @@ func build() (result, error) {
 		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 	})
 
+	wclPoller := warcraftlogs.NewPoller(warcraftlogs.PollerParams{
+		Store:       st,
+		Client:      wclClient,
+		Logger:      appLogger,
+		Interval:    5 * time.Minute,
+		MatchWindow: 24 * time.Hour,
+	})
+
 	discordClient, err := discord.New(discord.Params{
 		Config:       cfg.Discord,
 		Store:        st,
@@ -105,6 +116,7 @@ func build() (result, error) {
 		RaiderIO:      rio,
 		RIOPoller:     rioPoller,
 		WarcraftLogs:  wclClient,
+		WCLPoller:     wclPoller,
 	}, nil
 }
 
@@ -130,9 +142,14 @@ func run(r result) error {
 		return fmt.Errorf("start rio poller: %w", err)
 	}
 
+	if err := r.WCLPoller.Start(ctx); err != nil {
+		return fmt.Errorf("start wcl poller: %w", err)
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	r.WCLPoller.Stop()
 	r.DiscordClient.Stop()
 	cancel()
 

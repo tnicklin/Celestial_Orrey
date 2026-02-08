@@ -919,7 +919,13 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 	linkedCount := 0
 	if c.warcraftLogs != nil {
 		linker := warcraftlogs.NewLinker(c.store, c.warcraftLogs, warcraftlogs.ReportFilter{}, c.logger)
-		linker.MatchWindow = 6 * time.Hour
+		linker.MatchWindow = 24 * time.Hour // Aggressive: 24 hour window for matching
+
+		c.logger.InfoW("starting WCL linking",
+			"character", char.Name,
+			"keys_to_link", len(keys),
+			"match_window", linker.MatchWindow,
+		)
 
 		for _, key := range keys {
 			// Check if already linked
@@ -932,12 +938,26 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 				continue
 			}
 
+			c.logger.DebugW("attempting WCL match",
+				"key_id", key.KeyID,
+				"dungeon", key.Dungeon,
+				"level", key.KeyLevel,
+				"completed_at", key.CompletedAt,
+			)
+
 			match, err := linker.MatchKey(ctx, key)
-			if err != nil || match == nil {
-				c.logger.DebugW("no WCL match found",
+			if err != nil {
+				c.logger.WarnW("WCL match error",
 					"key_id", key.KeyID,
 					"dungeon", key.Dungeon,
 					"error", err,
+				)
+				continue
+			}
+			if match == nil {
+				c.logger.DebugW("no WCL match found",
+					"key_id", key.KeyID,
+					"dungeon", key.Dungeon,
 				)
 				continue
 			}
@@ -959,7 +979,9 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 			c.logger.InfoW("WCL link created",
 				"key_id", key.KeyID,
 				"report_code", match.Run.ReportCode,
+				"fight_id", fightID,
 				"url", url,
+				"confidence", match.Confidence,
 			)
 		}
 	}

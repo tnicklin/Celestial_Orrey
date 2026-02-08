@@ -184,17 +184,69 @@ func (l *Linker) MatchKey(ctx context.Context, key models.CompletedKey) (*MatchR
 		Region: key.Region,
 	}
 
-	runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 20)
+	l.Logger.DebugW("MatchKey: fetching WCL M+ runs",
+		"character", char.Name,
+		"realm", char.Realm,
+		"region", char.Region,
+		"key_dungeon", key.Dungeon,
+		"key_level", key.KeyLevel,
+		"key_completed_at", key.CompletedAt,
+	)
+
+	runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 50)
 	if err != nil {
+		l.Logger.ErrorW("MatchKey: failed to fetch WCL M+ runs",
+			"character", char.Name,
+			"error", err,
+		)
 		return nil, err
+	}
+
+	l.Logger.DebugW("MatchKey: fetched WCL M+ runs",
+		"character", char.Name,
+		"runs_count", len(runs),
+	)
+
+	// Log all runs for debugging
+	for i, run := range runs {
+		l.Logger.DebugW("MatchKey: WCL run",
+			"index", i,
+			"dungeon", run.Dungeon,
+			"level", run.KeystoneLevel,
+			"completed_at", run.CompletedAt.Format(time.RFC3339),
+			"report_code", run.ReportCode,
+			"fight_id", run.FightID,
+			"kill", run.Kill,
+		)
 	}
 
 	keyTime, err := timeutil.ParseRFC3339(key.CompletedAt)
 	if err != nil {
+		l.Logger.ErrorW("MatchKey: failed to parse key completed_at",
+			"completed_at", key.CompletedAt,
+			"error", err,
+		)
 		return nil, err
 	}
 
-	return matchKeyToRuns(key, keyTime, runs, l.DungeonMatch, l.MatchWindow)
+	result, err := matchKeyToRuns(key, keyTime, runs, l.DungeonMatch, l.MatchWindow, l.Logger)
+	if result == nil {
+		l.Logger.DebugW("MatchKey: no match found",
+			"key_dungeon", key.Dungeon,
+			"key_level", key.KeyLevel,
+			"key_time", keyTime.Format(time.RFC3339),
+			"match_window", l.MatchWindow,
+		)
+	} else {
+		l.Logger.DebugW("MatchKey: match found",
+			"key_dungeon", key.Dungeon,
+			"matched_dungeon", result.Run.Dungeon,
+			"confidence", result.Confidence,
+			"report_code", result.Run.ReportCode,
+		)
+	}
+
+	return result, err
 }
 
 // MatchKeys attempts to match multiple RaiderIO keys to WarcraftLogs runs for a character.
@@ -241,7 +293,7 @@ func (l *Linker) MatchKeys(ctx context.Context, keys []models.CompletedKey) ([]M
 				continue
 			}
 
-			match, err := matchKeyToRuns(key, keyTime, runs, l.DungeonMatch, l.MatchWindow)
+			match, err := matchKeyToRuns(key, keyTime, runs, l.DungeonMatch, l.MatchWindow, l.Logger)
 			if err != nil || match == nil {
 				continue
 			}
@@ -253,9 +305,12 @@ func (l *Linker) MatchKeys(ctx context.Context, keys []models.CompletedKey) ([]M
 }
 
 // matchKeyToRuns finds the best matching WCL run for a RaiderIO key.
-func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlusRun, matchFn func(string, string) bool, window time.Duration) (*MatchResult, error) {
+func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlusRun, matchFn func(string, string) bool, window time.Duration, log logger.Logger) (*MatchResult, error) {
 	if matchFn == nil {
 		matchFn = defaultDungeonMatch
+	}
+	if log == nil {
+		log = logger.NewNop()
 	}
 
 	var best *MythicPlusRun
@@ -266,16 +321,33 @@ func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlu
 
 		// Must be a successful M+ completion
 		if !run.Kill || run.KeystoneLevel == 0 {
+			log.DebugW("matchKeyToRuns: skipping run (not kill or no keystone)",
+				"run_dungeon", run.Dungeon,
+				"run_level", run.KeystoneLevel,
+				"kill", run.Kill,
+			)
 			continue
 		}
 
 		// Must match key level
 		if run.KeystoneLevel != key.KeyLevel {
+			log.DebugW("matchKeyToRuns: level mismatch",
+				"run_dungeon", run.Dungeon,
+				"run_level", run.KeystoneLevel,
+				"key_level", key.KeyLevel,
+			)
 			continue
 		}
 
 		// Must match dungeon name
-		if !matchFn(key.Dungeon, run.Dungeon) {
+		dungeonMatch := matchFn(key.Dungeon, run.Dungeon)
+		if !dungeonMatch {
+			log.DebugW("matchKeyToRuns: dungeon mismatch",
+				"key_dungeon", key.Dungeon,
+				"run_dungeon", run.Dungeon,
+				"normalized_key", normalizeName(key.Dungeon),
+				"normalized_run", normalizeName(run.Dungeon),
+			)
 			continue
 		}
 
@@ -285,11 +357,27 @@ func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlu
 			timeDiff = -timeDiff
 		}
 		if timeDiff > window {
+			log.DebugW("matchKeyToRuns: time outside window",
+				"key_dungeon", key.Dungeon,
+				"key_time", keyTime.Format(time.RFC3339),
+				"run_time", run.CompletedAt.Format(time.RFC3339),
+				"time_diff", timeDiff,
+				"window", window,
+			)
 			continue
 		}
 
 		// Calculate confidence score based on multiple factors
 		confidence := calculateMatchConfidence(key, run, timeDiff, window)
+
+		log.DebugW("matchKeyToRuns: potential match",
+			"key_dungeon", key.Dungeon,
+			"run_dungeon", run.Dungeon,
+			"key_level", key.KeyLevel,
+			"time_diff", timeDiff,
+			"confidence", confidence,
+			"report_code", run.ReportCode,
+		)
 
 		if confidence > bestConfidence {
 			best = run
