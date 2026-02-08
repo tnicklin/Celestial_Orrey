@@ -410,18 +410,33 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 	}
 	sb.WriteString(fmt.Sprintf("**%s** (%s) — %d %s\n", char.Name, char.Realm, len(keys), keyWord))
 
-	// Compact list format with WCL links
+	// Compact list format with timing and WCL links
 	for _, key := range keys {
 		dungeonShort := shortenDungeonName(key.Dungeon)
+		timing := formatTimingDiff(key.RunTimeMS, key.ParTimeMS)
 
 		// Get WCL link if available
 		wclLink := ""
 		links, err := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
-		if err == nil && len(links) > 0 {
-			wclLink = fmt.Sprintf(" [log](%s)", links[0].URL)
+		if err != nil {
+			c.logger.DebugW("WCL link query error",
+				"key_id", key.KeyID,
+				"error", err,
+			)
+		} else if len(links) > 0 {
+			// Wrap URL in <> to suppress Discord link preview
+			wclLink = fmt.Sprintf(" [log](<%s>)", links[0].URL)
+			c.logger.DebugW("WCL link found",
+				"key_id", key.KeyID,
+				"url", links[0].URL,
+			)
+		} else {
+			c.logger.DebugW("no WCL link found",
+				"key_id", key.KeyID,
+			)
 		}
 
-		sb.WriteString(fmt.Sprintf("• +%d %s%s\n", key.KeyLevel, dungeonShort, wclLink))
+		sb.WriteString(fmt.Sprintf("• +%d %s %s%s\n", key.KeyLevel, dungeonShort, timing, wclLink))
 	}
 	sb.WriteString("\n")
 }

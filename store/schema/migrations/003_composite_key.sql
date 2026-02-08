@@ -1,7 +1,30 @@
 -- Change primary key from key_id to (key_id, character_id)
 -- This allows multiple tracked characters to each own their participation in the same run
 
--- Create new table with composite primary key
+-- First, recreate warcraftlogs_links without the foreign key constraint
+-- (since key_id is no longer a unique column in completed_keys)
+CREATE TABLE IF NOT EXISTS warcraftlogs_links_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id INTEGER NOT NULL,
+  report_code TEXT NOT NULL,
+  fight_id INTEGER,
+  pull_id INTEGER,
+  url TEXT,
+  inserted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(key_id, report_code, fight_id, pull_id)
+);
+
+INSERT OR IGNORE INTO warcraftlogs_links_new
+SELECT id, key_id, report_code, fight_id, pull_id, url, inserted_at
+FROM warcraftlogs_links;
+
+DROP TABLE IF EXISTS warcraftlogs_links;
+ALTER TABLE warcraftlogs_links_new RENAME TO warcraftlogs_links;
+
+CREATE INDEX IF NOT EXISTS idx_warcraftlogs_links_key
+ON warcraftlogs_links(key_id);
+
+-- Now recreate completed_keys with composite primary key
 CREATE TABLE IF NOT EXISTS completed_keys_new (
   key_id        INTEGER NOT NULL,
   character_id  INTEGER NOT NULL REFERENCES characters(id),
