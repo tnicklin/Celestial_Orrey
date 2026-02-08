@@ -1,17 +1,17 @@
 logger:
-  level: info
+  level: debug
   output_paths:
     - stdout
 
 discord:
-  guild_id: "836026401823260733"
-  command_channel: "1326784974602637413"
-  report_channel: "1326784974602637413"
+  guild_id: "1470164460000907482"
+  command_channel: "1470164461619777718"
+  report_channel: "1470164461619777718"
 
 raiderio:
   base_url: https://raider.io
   user_agent: celestial-orrey/1.0
-  poll_interval: 5m
+  poll_interval: 1m
   max_concurrent: 4
 
 store:

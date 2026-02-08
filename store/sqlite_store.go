@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
+	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
 	"github.com/tnicklin/celestial_orrey/store/db"
 )
@@ -31,6 +32,7 @@ type SQLiteStore struct {
 	mu           sync.RWMutex
 	db           *sql.DB
 	snapshotPath string
+	logger       logger.Logger
 
 	// Debounced flush
 	flushDebounce time.Duration
@@ -46,8 +48,30 @@ func NewSQLiteStore(snapshotPath string) *SQLiteStore {
 	return &SQLiteStore{
 		snapshotPath:  snapshotPath,
 		flushDebounce: defaultDebounce,
+		logger:        nil, // Will use nop logging if not set
 	}
 }
+
+// SetLogger sets the logger for the store.
+func (s *SQLiteStore) SetLogger(l logger.Logger) {
+	s.logger = l
+}
+
+func (s *SQLiteStore) log() logger.Logger {
+	if s.logger == nil {
+		return nopLogger{}
+	}
+	return s.logger
+}
+
+// nopLogger is a no-op logger for when no logger is configured.
+type nopLogger struct{}
+
+func (nopLogger) DebugW(_ string, _ ...any) {}
+func (nopLogger) InfoW(_ string, _ ...any)  {}
+func (nopLogger) WarnW(_ string, _ ...any)  {}
+func (nopLogger) ErrorW(_ string, _ ...any) {}
+func (nopLogger) Sync() error               { return nil }
 
 // SetFlushDebounce sets the debounce duration for disk flushes.
 // Must be called before Open().
@@ -216,8 +240,20 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 		return errors.New("store is not open")
 	}
 
+	s.log().DebugW("upserting completed key",
+		"character", key.Character,
+		"realm", key.Realm,
+		"region", key.Region,
+		"dungeon", key.Dungeon,
+		"level", key.KeyLevel,
+		"key_id", key.KeyID,
+		"completed_at", key.CompletedAt,
+		"source", key.Source,
+	)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		s.log().ErrorW("failed to begin transaction", "error", err)
 		return err
 	}
 
@@ -230,12 +266,29 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 	})
 	if err != nil {
 		_ = tx.Rollback()
+		s.log().ErrorW("failed to upsert character",
+			"error", err,
+			"character", key.Character,
+			"realm", key.Realm,
+			"region", key.Region,
+		)
 		return err
 	}
+
+	s.log().DebugW("character upserted",
+		"character_id", characterID,
+		"character", key.Character,
+		"realm", key.Realm,
+		"region", key.Region,
+	)
 
 	keyID := key.KeyID
 	if keyID <= 0 {
 		keyID = syntheticKeyID(key)
+		s.log().DebugW("using synthetic key ID",
+			"original_key_id", key.KeyID,
+			"synthetic_key_id", keyID,
+		)
 	}
 
 	err = queries.InsertCompletedKey(ctx, db.InsertCompletedKeyParams{
@@ -250,12 +303,25 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 	})
 	if err != nil {
 		_ = tx.Rollback()
+		s.log().ErrorW("failed to insert completed key",
+			"error", err,
+			"key_id", keyID,
+			"dungeon", key.Dungeon,
+		)
 		return err
 	}
 
 	if err := tx.Commit(); err != nil {
+		s.log().ErrorW("failed to commit transaction", "error", err)
 		return err
 	}
+
+	s.log().DebugW("completed key inserted successfully",
+		"key_id", keyID,
+		"character", key.Character,
+		"dungeon", key.Dungeon,
+		"level", key.KeyLevel,
+	)
 
 	// Schedule debounced flush instead of immediate flush
 	s.scheduleFlush()
@@ -333,18 +399,27 @@ func (s *SQLiteStore) ListKeysByCharacterSince(ctx context.Context, character st
 		return nil, errors.New("store is not open")
 	}
 
+	s.log().DebugW("listing keys by character since",
+		"character", character,
+		"cutoff", cutoff.Format(time.RFC3339),
+	)
+
 	queries := db.New(s.db)
 	rows, err := queries.ListKeysByCharacterSince(ctx, db.ListKeysByCharacterSinceParams{
-		Name:        character,
+		LOWER:       character,
 		CompletedAt: cutoff.Format(time.RFC3339),
 	})
 	if err != nil {
+		s.log().ErrorW("failed to list keys by character",
+			"error", err,
+			"character", character,
+		)
 		return nil, err
 	}
 
 	out := make([]models.CompletedKey, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, models.CompletedKey{
+		key := models.CompletedKey{
 			KeyID:       row.KeyID,
 			Region:      row.Region,
 			Realm:       row.Realm,
@@ -355,8 +430,23 @@ func (s *SQLiteStore) ListKeysByCharacterSince(ctx context.Context, character st
 			ParTimeMS:   row.ParTimeMs,
 			CompletedAt: row.CompletedAt,
 			Source:      row.Source,
-		})
+		}
+		out = append(out, key)
+		s.log().DebugW("found key",
+			"character", row.Character,
+			"realm", row.Realm,
+			"region", row.Region,
+			"dungeon", row.Dungeon,
+			"level", row.KeyLvl,
+			"key_id", row.KeyID,
+		)
 	}
+
+	s.log().DebugW("keys found for character",
+		"character", character,
+		"count", len(out),
+	)
+
 	return out, nil
 }
 
@@ -442,20 +532,31 @@ func (s *SQLiteStore) ListCharacters(ctx context.Context) ([]models.Character, e
 		return nil, errors.New("store is not open")
 	}
 
+	s.log().DebugW("listing all characters")
+
 	queries := db.New(s.db)
 	rows, err := queries.ListCharacters(ctx)
 	if err != nil {
+		s.log().ErrorW("failed to list characters", "error", err)
 		return nil, err
 	}
 
 	out := make([]models.Character, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, models.Character{
+		char := models.Character{
 			Region: row.Region,
 			Realm:  row.Realm,
 			Name:   row.Name,
-		})
+		}
+		out = append(out, char)
+		s.log().DebugW("found character",
+			"name", row.Name,
+			"realm", row.Realm,
+			"region", row.Region,
+		)
 	}
+
+	s.log().DebugW("characters found", "count", len(out))
 	return out, nil
 }
 

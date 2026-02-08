@@ -5,9 +5,16 @@ ON CONFLICT(region, realm, name) DO UPDATE SET name=excluded.name
 RETURNING id;
 
 -- name: InsertCompletedKey :exec
-INSERT OR IGNORE INTO completed_keys(
+INSERT INTO completed_keys(
   key_id, character_id, dungeon, key_lvl, run_time_ms, par_time_ms, completed_at, source
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(key_id) DO UPDATE SET
+  dungeon = excluded.dungeon,
+  key_lvl = excluded.key_lvl,
+  run_time_ms = excluded.run_time_ms,
+  par_time_ms = excluded.par_time_ms,
+  completed_at = excluded.completed_at,
+  source = excluded.source;
 
 -- name: CountKeysByCharacterSince :many
 SELECT c.region, c.realm, c.name, COUNT(*) AS key_count
@@ -22,7 +29,14 @@ SELECT k.key_id, c.region, c.realm, c.name AS character, k.dungeon, k.key_lvl,
 k.run_time_ms, k.par_time_ms, k.completed_at, k.source
 FROM completed_keys k
 JOIN characters c ON c.id = k.character_id
-WHERE c.name = ? AND k.completed_at > ?
+WHERE LOWER(c.name) = LOWER(?) AND k.completed_at > ?
+ORDER BY k.completed_at DESC;
+
+-- name: ListAllKeysWithCharacters :many
+SELECT k.key_id, c.id as character_id, c.region, c.realm, c.name AS character,
+k.dungeon, k.key_lvl, k.run_time_ms, k.par_time_ms, k.completed_at, k.source
+FROM completed_keys k
+JOIN characters c ON c.id = k.character_id
 ORDER BY k.completed_at DESC;
 
 -- name: ListKeysSince :many

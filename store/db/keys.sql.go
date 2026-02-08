@@ -127,9 +127,16 @@ func (q *Queries) GetCharacterID(ctx context.Context, arg GetCharacterIDParams) 
 }
 
 const insertCompletedKey = `-- name: InsertCompletedKey :exec
-INSERT OR IGNORE INTO completed_keys(
+INSERT INTO completed_keys(
   key_id, character_id, dungeon, key_lvl, run_time_ms, par_time_ms, completed_at, source
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(key_id) DO UPDATE SET
+  dungeon = excluded.dungeon,
+  key_lvl = excluded.key_lvl,
+  run_time_ms = excluded.run_time_ms,
+  par_time_ms = excluded.par_time_ms,
+  completed_at = excluded.completed_at,
+  source = excluded.source
 `
 
 type InsertCompletedKeyParams struct {
@@ -155,6 +162,63 @@ func (q *Queries) InsertCompletedKey(ctx context.Context, arg InsertCompletedKey
 		arg.Source,
 	)
 	return err
+}
+
+const listAllKeysWithCharacters = `-- name: ListAllKeysWithCharacters :many
+SELECT k.key_id, c.id as character_id, c.region, c.realm, c.name AS character,
+k.dungeon, k.key_lvl, k.run_time_ms, k.par_time_ms, k.completed_at, k.source
+FROM completed_keys k
+JOIN characters c ON c.id = k.character_id
+ORDER BY k.completed_at DESC
+`
+
+type ListAllKeysWithCharactersRow struct {
+	KeyID       int64  `json:"key_id"`
+	CharacterID int64  `json:"character_id"`
+	Region      string `json:"region"`
+	Realm       string `json:"realm"`
+	Character   string `json:"character"`
+	Dungeon     string `json:"dungeon"`
+	KeyLvl      int64  `json:"key_lvl"`
+	RunTimeMs   int64  `json:"run_time_ms"`
+	ParTimeMs   int64  `json:"par_time_ms"`
+	CompletedAt string `json:"completed_at"`
+	Source      string `json:"source"`
+}
+
+func (q *Queries) ListAllKeysWithCharacters(ctx context.Context) ([]ListAllKeysWithCharactersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAllKeysWithCharacters)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllKeysWithCharactersRow
+	for rows.Next() {
+		var i ListAllKeysWithCharactersRow
+		if err := rows.Scan(
+			&i.KeyID,
+			&i.CharacterID,
+			&i.Region,
+			&i.Realm,
+			&i.Character,
+			&i.Dungeon,
+			&i.KeyLvl,
+			&i.RunTimeMs,
+			&i.ParTimeMs,
+			&i.CompletedAt,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCharacters = `-- name: ListCharacters :many
@@ -195,12 +259,12 @@ SELECT k.key_id, c.region, c.realm, c.name AS character, k.dungeon, k.key_lvl,
 k.run_time_ms, k.par_time_ms, k.completed_at, k.source
 FROM completed_keys k
 JOIN characters c ON c.id = k.character_id
-WHERE c.name = ? AND k.completed_at > ?
+WHERE LOWER(c.name) = LOWER(?) AND k.completed_at > ?
 ORDER BY k.completed_at DESC
 `
 
 type ListKeysByCharacterSinceParams struct {
-	Name        string `json:"name"`
+	LOWER       string `json:"LOWER"`
 	CompletedAt string `json:"completed_at"`
 }
 
@@ -218,7 +282,7 @@ type ListKeysByCharacterSinceRow struct {
 }
 
 func (q *Queries) ListKeysByCharacterSince(ctx context.Context, arg ListKeysByCharacterSinceParams) ([]ListKeysByCharacterSinceRow, error) {
-	rows, err := q.db.QueryContext(ctx, listKeysByCharacterSince, arg.Name, arg.CompletedAt)
+	rows, err := q.db.QueryContext(ctx, listKeysByCharacterSince, arg.LOWER, arg.CompletedAt)
 	if err != nil {
 		return nil, err
 	}

@@ -33,6 +33,10 @@ func New(cfg Config) (*DefaultLogger, error) {
 	return &DefaultLogger{logger: zapLogger.Sugar()}, nil
 }
 
+func (l *DefaultLogger) DebugW(msg string, keysAndValues ...any) {
+	l.logger.Debugw(msg, keysAndValues...)
+}
+
 func (l *DefaultLogger) InfoW(msg string, keysAndValues ...any) {
 	l.logger.Infow(msg, keysAndValues...)
 }

@@ -64,11 +64,13 @@ func build() (result, error) {
 	}
 
 	st := store.NewSQLiteStore(cfg.Store.Path)
+	st.SetLogger(appLogger)
 
 	rio := rioClient.New(rioClient.Params{
 		BaseURL:    cfg.RaiderIO.BaseURL,
 		UserAgent:  cfg.RaiderIO.UserAgent,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		Logger:     appLogger,
 	})
 	rioPoller := raiderio.New(raiderio.Params{
 		Config:     cfg.RaiderIO,
