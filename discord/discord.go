@@ -222,8 +222,6 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		response = c.cmdHelp()
 	case "char":
 		response, err = c.cmdChar(ctx, s, m, args)
-	case "debug":
-		response, err = c.cmdDebug(ctx, s, m)
 	default:
 		return
 	}
@@ -394,26 +392,21 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 }
 
 func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.Builder, char models.Character, keys []models.CompletedKey) {
-	// Header with character name and realm
-	sb.WriteString(fmt.Sprintf("**%s** (%s)\n", char.Name, char.Realm))
-
-	for _, key := range keys {
-		// Format: - [Mon 3:04pm] +12 Eco-Dome (-1:23) [Report]
-		completedAt := formatShortTime(key.CompletedAt)
-		timing := formatTimingDiff(key.RunTimeMS, key.ParTimeMS)
-		dungeonShort := shortenDungeonName(key.Dungeon)
-
-		// Get WCL link if available
-		wclLink := ""
-		links, err := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
-		if err == nil && len(links) > 0 {
-			wclLink = fmt.Sprintf(" [Report](%s)", links[0].URL)
-		}
-
-		sb.WriteString(fmt.Sprintf("  - [%s] **+%d** %s %s%s\n",
-			completedAt, key.KeyLevel, dungeonShort, timing, wclLink))
+	// Header with character name, realm, and count
+	keyWord := "keys"
+	if len(keys) == 1 {
+		keyWord = "key"
 	}
-	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("**%s** (%s) — %d %s\n", char.Name, char.Realm, len(keys), keyWord))
+
+	// Compact inline format: +14 Ara-Kara • +13 Eco-Dome • +12 Priory
+	var parts []string
+	for _, key := range keys {
+		dungeonShort := shortenDungeonName(key.Dungeon)
+		parts = append(parts, fmt.Sprintf("+%d %s", key.KeyLevel, dungeonShort))
+	}
+	sb.WriteString(strings.Join(parts, " • "))
+	sb.WriteString("\n\n")
 }
 
 func (c *DefaultDiscord) generateKeysReport(ctx context.Context, start, end time.Time, title string) (string, error) {
@@ -699,74 +692,6 @@ func (c *DefaultDiscord) cmdHelp() string {
 ` + "```" + `
 *Use realm slugs (e.g., area-52, burning-legion). Region defaults to US.*
 *Automatic reports post at midnight (daily) and 8am (weekly progress) PST*`
-}
-
-// cmdDebug dumps database state for debugging (admin only)
-func (c *DefaultDiscord) cmdDebug(ctx context.Context, s *discordgo.Session, m *discordgo.MessageCreate) (string, error) {
-	if !c.hasAdminRole(s, m) {
-		return "This command requires the `bot-admin` role.", nil
-	}
-
-	if c.store == nil {
-		return "", errors.New("database not configured")
-	}
-
-	var sb strings.Builder
-	sb.WriteString("**Database Debug Info**\n\n")
-
-	// List all characters
-	chars, err := c.store.ListCharacters(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to list characters: %w", err)
-	}
-
-	sb.WriteString("**Characters in DB:**\n```\n")
-	for i, char := range chars {
-		sb.WriteString(fmt.Sprintf("%d. name=%q realm=%q region=%q\n", i+1, char.Name, char.Realm, char.Region))
-	}
-	sb.WriteString("```\n")
-
-	// List all keys since reset
-	resetTime := timeutil.WeeklyReset()
-	sb.WriteString(fmt.Sprintf("**Keys since reset** (%s):\n```\n", resetTime.Format(time.RFC3339)))
-
-	keys, err := c.store.ListKeysSince(ctx, resetTime)
-	if err != nil {
-		return "", fmt.Errorf("failed to list keys: %w", err)
-	}
-
-	if len(keys) == 0 {
-		sb.WriteString("No keys found\n")
-	} else {
-		for i, key := range keys {
-			sb.WriteString(fmt.Sprintf("%d. char=%q realm=%q region=%q dungeon=%q lvl=%d key_id=%d\n",
-				i+1, key.Character, key.Realm, key.Region, key.Dungeon, key.KeyLevel, key.KeyID))
-		}
-	}
-	sb.WriteString("```\n")
-
-	// Show what each character query returns
-	sb.WriteString("**Per-character key counts:**\n```\n")
-	for _, char := range chars {
-		charKeys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, resetTime)
-		if err != nil {
-			sb.WriteString(fmt.Sprintf("%s: ERROR %v\n", char.Name, err))
-			continue
-		}
-
-		// Count how many match realm/region
-		matchCount := 0
-		for _, key := range charKeys {
-			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
-				matchCount++
-			}
-		}
-		sb.WriteString(fmt.Sprintf("%s (%s/%s): %d raw, %d after filter\n",
-			char.Name, char.Realm, char.Region, len(charKeys), matchCount))
-	}
-	sb.WriteString("```")
-
-	return sb.String(), nil
 }
 
 // cmdChar handles character management commands (admin only)
