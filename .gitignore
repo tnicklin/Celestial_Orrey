@@ -1,11 +1,6 @@
 .idea/*
 /docs/*
 
-# Secrets - never commit credentials
-config/secrets.yaml
-
-# Data directory
+secrets.yaml
 data/
-
-# Test databases
 *.db
