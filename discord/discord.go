@@ -423,8 +423,8 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 	}
 	sb.WriteString(fmt.Sprintf("**%s** (%s) — %d %s\n", char.Name, char.Realm, len(keys), keyWord))
 
-	// Compact list format with timing and WCL links
 	for _, key := range keys {
+		completedAt := formatShortTime(key.CompletedAt)
 		dungeonShort := shortenDungeonName(key.Dungeon)
 		timing := formatTimingDiff(key.RunTimeMS, key.ParTimeMS)
 
@@ -437,7 +437,6 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 				"error", err,
 			)
 		} else if len(links) > 0 {
-			// Wrap URL in <> to suppress Discord link preview
 			wclLink = fmt.Sprintf(" [log](<%s>)", links[0].URL)
 			c.logger.DebugW("WCL link found",
 				"key_id", key.KeyID,
@@ -449,7 +448,7 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 			)
 		}
 
-		sb.WriteString(fmt.Sprintf("• +%d %s %s%s\n", key.KeyLevel, dungeonShort, timing, wclLink))
+		sb.WriteString(fmt.Sprintf("• [%s] %d %s %s%s\n", completedAt, key.KeyLevel, dungeonShort, timing, wclLink))
 	}
 	sb.WriteString("\n")
 }
