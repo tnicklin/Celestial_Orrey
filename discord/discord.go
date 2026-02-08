@@ -43,54 +43,55 @@ type DefaultDiscord struct {
 }
 
 type Params struct {
-	Session        *discordgo.Session
-	GuildID        string
-	CommandChannel string
-	ReportChannel  string
-	Store          store.Store
-	RaiderIO       rioClient.Client
-	WarcraftLogs   warcraftlogs.WCL
-	Logger         logger.Logger
+	Config       Config
+	Store        store.Store
+	RaiderIO     rioClient.Client
+	WarcraftLogs warcraftlogs.WCL
+	Logger       logger.Logger
 }
 
-func New(p Params) *DefaultDiscord {
+func New(p Params) (*DefaultDiscord, error) {
+	cfg := p.Config
+
+	session, err := discordgo.New("Bot " + cfg.Token)
+	if err != nil {
+		return nil, fmt.Errorf("create discord session: %w", err)
+	}
+	session.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
+
 	log := p.Logger
 	if log == nil {
 		log = logger.NewNop()
 	}
+
 	return &DefaultDiscord{
-		session:        p.Session,
-		guildID:        p.GuildID,
-		channels:       make(map[string]string),
-		commandChannel: p.CommandChannel,
-		reportChannel:  p.ReportChannel,
+		session:        session,
+		guildID:        cfg.GuildID,
+		commandChannel: cfg.CommandChannel,
+		reportChannel:  cfg.ReportChannel,
 		store:          p.Store,
 		raiderIO:       p.RaiderIO,
 		warcraftLogs:   p.WarcraftLogs,
 		logger:         log,
-	}
+		channels:       make(map[string]string),
+	}, nil
 }
 
 func (c *DefaultDiscord) Start(ctx context.Context) error {
-	if c.session == nil {
-		return errors.New("discord session is nil")
+	if err := c.session.Open(); err != nil {
+		return fmt.Errorf("open discord connection: %w", err)
 	}
 
 	c.removeHandler = c.session.AddHandler(c.handleMessage)
 	c.stopScheduler = make(chan struct{})
 	c.schedulerDone = make(chan struct{})
-	go c.runScheduler()
 
-	c.logger.InfoW("discord command handler started",
-		"command_channel", c.commandChannel,
-		"report_channel", c.reportChannel,
-		"prefix", commandPrefix,
-	)
+	go c.runScheduler()
 
 	return nil
 }
 
-func (c *DefaultDiscord) Stop() error {
+func (c *DefaultDiscord) Stop() {
 	if c.removeHandler != nil {
 		c.removeHandler()
 		c.removeHandler = nil
@@ -99,7 +100,7 @@ func (c *DefaultDiscord) Stop() error {
 		close(c.stopScheduler)
 		<-c.schedulerDone
 	}
-	return nil
+	c.session.Close()
 }
 
 func (c *DefaultDiscord) runScheduler() {
@@ -117,7 +118,6 @@ func (c *DefaultDiscord) runScheduler() {
 		case now := <-ticker.C:
 			pstNow := now.In(pstLocation)
 
-			// Midnight PST (00:00) - Daily report for previous day
 			if pstNow.Hour() == 0 && pstNow.Minute() == 0 {
 				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 0, 0, 0, 0, pstLocation)
 				if !today.Equal(lastMidnight) {
@@ -126,7 +126,6 @@ func (c *DefaultDiscord) runScheduler() {
 				}
 			}
 
-			// 8am PST - Weekly progress report
 			if pstNow.Hour() == 8 && pstNow.Minute() == 0 {
 				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 8, 0, 0, 0, pstLocation)
 				if !today.Equal(lastMorning) {
