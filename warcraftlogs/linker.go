@@ -197,7 +197,7 @@ func (l *Linker) MatchKey(ctx context.Context, key models.CompletedKey) (*MatchR
 		"key_completed_at", key.CompletedAt,
 	)
 
-	runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 50)
+	runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 10)
 	if err != nil {
 		l.Logger.ErrorW("MatchKey: failed to fetch WCL M+ runs",
 			"character", char.Name,
@@ -282,7 +282,7 @@ func (l *Linker) MatchKeys(ctx context.Context, keys []models.CompletedKey) ([]M
 			Region: charKeys[0].Region,
 		}
 
-		runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 50)
+		runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 10)
 		if err != nil {
 			l.Logger.WarnW("failed to fetch M+ runs for character",
 				"character", char.Name,
@@ -324,11 +324,25 @@ func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlu
 		run := &runs[i]
 
 		// Must be a successful M+ completion
-		if !run.Kill || run.KeystoneLevel == 0 {
-			log.DebugW("matchKeyToRuns: skipping run (not kill or no keystone)",
+		// Note: Some WCL reports may not have kill=true even for completed runs
+		// So we check for keystoneLevel > 0 as the primary indicator
+		if run.KeystoneLevel == 0 {
+			log.DebugW("matchKeyToRuns: skipping run (no keystone)",
+				"run_dungeon", run.Dungeon,
+				"run_level", run.KeystoneLevel,
+			)
+			continue
+		}
+
+		// Skip if explicitly marked as not killed (wipe)
+		// But allow runs where kill is not set (nil -> false by default)
+		// KeystoneTime > 0 indicates a completed run regardless of kill flag
+		if !run.Kill && run.KeystoneTime == 0 {
+			log.DebugW("matchKeyToRuns: skipping run (not completed, no keystone time)",
 				"run_dungeon", run.Dungeon,
 				"run_level", run.KeystoneLevel,
 				"kill", run.Kill,
+				"keystone_time", run.KeystoneTime,
 			)
 			continue
 		}
