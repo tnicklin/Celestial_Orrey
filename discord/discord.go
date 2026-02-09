@@ -36,6 +36,8 @@ type DefaultDiscord struct {
 	warcraftLogs  warcraftlogs.WCL
 	logger        logger.Logger
 	removeHandler func()
+	stopScheduler chan struct{}
+	schedulerDone chan struct{}
 }
 
 type Params struct {
@@ -76,6 +78,11 @@ func (c *DefaultDiscord) Start(ctx context.Context) error {
 	}
 
 	c.removeHandler = c.session.AddHandler(c.handleMessage)
+	c.stopScheduler = make(chan struct{})
+	c.schedulerDone = make(chan struct{})
+
+	go c.runScheduler()
+
 	return nil
 }
 
@@ -84,7 +91,69 @@ func (c *DefaultDiscord) Stop() {
 		c.removeHandler()
 		c.removeHandler = nil
 	}
+	if c.stopScheduler != nil {
+		close(c.stopScheduler)
+		<-c.schedulerDone
+	}
 	c.session.Close()
+}
+
+func (c *DefaultDiscord) runScheduler() {
+	defer close(c.schedulerDone)
+
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	var lastPost time.Time
+
+	for {
+		select {
+		case <-c.stopScheduler:
+			return
+		case now := <-ticker.C:
+			pstNow := now.In(pstLocation)
+
+			// 7am PST daily post
+			if pstNow.Hour() == 7 && pstNow.Minute() == 0 {
+				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 7, 0, 0, 0, pstLocation)
+				if !today.Equal(lastPost) {
+					lastPost = today
+					c.postDailyAnnouncement(pstNow)
+				}
+			}
+		}
+	}
+}
+
+func (c *DefaultDiscord) postDailyAnnouncement(now time.Time) {
+	ctx := context.Background()
+
+	// Tuesday = reset day
+	if now.Weekday() == time.Tuesday {
+		// Archive last week's data before reset
+		if err := c.store.ArchiveWeek(ctx); err != nil {
+			c.logger.ErrorW("failed to archive week", "error", err)
+		}
+
+		// Post reset message
+		msg := "**Dawn of the 1st Day**"
+		if err := c.WriteMessage(c.listenChannel, msg); err != nil {
+			c.logger.ErrorW("failed to post reset message", "error", err)
+		}
+		return
+	}
+
+	// Other days: post the weekly progress report
+	resetTime := timeutil.WeeklyReset()
+	report, err := c.formatAllCharactersReport(ctx, resetTime)
+	if err != nil {
+		c.logger.ErrorW("failed to generate report", "error", err)
+		return
+	}
+
+	if err := c.WriteMessage(c.listenChannel, report); err != nil {
+		c.logger.ErrorW("failed to post daily report", "error", err)
+	}
 }
 
 func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {

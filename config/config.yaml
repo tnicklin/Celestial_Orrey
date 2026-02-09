@@ -15,6 +15,7 @@ raiderio:
 
 store:
   path: data/celestial_orrey.db
+  backup_dir: data/backup
 
 warcraftlogs:
   guild_name: ""

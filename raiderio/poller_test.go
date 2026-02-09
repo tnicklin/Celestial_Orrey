@@ -28,6 +28,7 @@ func (f *fakeStore) RestoreFromDisk(ctx context.Context, path string) error {
 	return nil
 }
 func (f *fakeStore) FlushToDisk(ctx context.Context, path string) error { return nil }
+func (f *fakeStore) ArchiveWeek(ctx context.Context) error              { return nil }
 func (f *fakeStore) UpsertCompletedKey(ctx context.Context, key models.CompletedKey) error {
 	f.seen = append(f.seen, key)
 	return nil

@@ -2,5 +2,6 @@ package store
 
 // Config holds store configuration.
 type Config struct {
-	Path string `yaml:"path"`
+	Path      string `yaml:"path"`
+	BackupDir string `yaml:"backup_dir"`
 }

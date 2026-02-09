@@ -65,8 +65,9 @@ func build() (result, error) {
 	}
 
 	st := store.NewSQLiteStore(store.Params{
-		Path:   cfg.Store.Path,
-		Logger: appLogger,
+		Path:      cfg.Store.Path,
+		BackupDir: cfg.Store.BackupDir,
+		Logger:    appLogger,
 	})
 
 	wclClient := warcraftlogs.New(warcraftlogs.Params{

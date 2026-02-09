@@ -32,6 +32,7 @@ type SQLiteStore struct {
 	mu           sync.RWMutex
 	db           *sql.DB
 	snapshotPath string
+	backupDir    string
 	logger       logger.Logger
 
 	// Debounced flush
@@ -45,13 +46,15 @@ type SQLiteStore struct {
 }
 
 type Params struct {
-	Path   string
-	Logger logger.Logger
+	Path      string
+	BackupDir string
+	Logger    logger.Logger
 }
 
 func NewSQLiteStore(p Params) *SQLiteStore {
 	return &SQLiteStore{
 		snapshotPath:  p.Path,
+		backupDir:     p.BackupDir,
 		flushDebounce: defaultDebounce,
 		logger:        p.Logger,
 	}
@@ -184,6 +187,30 @@ func (s *SQLiteStore) FlushToDisk(ctx context.Context, path string) error {
 	defer s.mu.Unlock()
 
 	return s.flushLocked(ctx, path)
+}
+
+// ArchiveWeek creates a timestamped backup of the current database in the backup directory.
+func (s *SQLiteStore) ArchiveWeek(ctx context.Context) error {
+	if s.backupDir == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	// Create backup directory if it doesn't exist
+	if err := os.MkdirAll(s.backupDir, 0o755); err != nil {
+		return fmt.Errorf("create backup dir: %w", err)
+	}
+
+	// Generate timestamped filename
+	timestamp := time.Now().Format("2006-01-02_150405")
+	backupPath := filepath.Join(s.backupDir, fmt.Sprintf("celestial_orrey_%s.db", timestamp))
+
+	return s.flushLocked(ctx, backupPath)
 }
 
 func (s *SQLiteStore) scheduleFlush() {

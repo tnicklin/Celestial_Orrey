@@ -29,6 +29,7 @@ type Store interface {
 
 	RestoreFromDisk(ctx context.Context, path string) error
 	FlushToDisk(ctx context.Context, path string) error
+	ArchiveWeek(ctx context.Context) error
 
 	UpsertCompletedKey(ctx context.Context, key models.CompletedKey) error
 	UpsertWarcraftLogsLink(ctx context.Context, link WarcraftLogsLink) error
