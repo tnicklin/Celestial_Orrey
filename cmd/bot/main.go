@@ -85,7 +85,6 @@ func build() (result, error) {
 		BaseURL:    cfg.RaiderIO.BaseURL,
 		UserAgent:  cfg.RaiderIO.UserAgent,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
-		Logger:     appLogger,
 	})
 
 	rioPoller := raiderio.New(raiderio.Params{

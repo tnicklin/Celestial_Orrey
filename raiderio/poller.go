@@ -79,16 +79,8 @@ func (p *DefaultPoller) Start(ctx context.Context) error {
 		return errors.New("raiderio: store is required")
 	}
 	if len(p.characters) == 0 {
-		p.logger.InfoW("poller start: no characters configured")
 		return nil
 	}
-
-	p.logger.InfoW("poller starting",
-		"characters", len(p.characters),
-		"interval", p.interval.String(),
-		"max_concurrent", p.maxConcurrent,
-		"wcl_linker_configured", p.wclLinker != nil,
-	)
 
 	sem := make(chan struct{}, p.maxConcurrent)
 	offsetStep := p.interval / time.Duration(len(p.characters))
@@ -96,14 +88,8 @@ func (p *DefaultPoller) Start(ctx context.Context) error {
 	for i, character := range p.characters {
 		known, err := p.loadKnownKeys(ctx, character)
 		if err != nil {
-			p.logger.ErrorW("failed to load known keys", "character", character.Key(), "error", err)
 			return err
 		}
-
-		p.logger.DebugW("loaded known keys for character",
-			"character", character.Key(),
-			"known_count", len(known),
-		)
 
 		initialDelay := time.Duration(i) * offsetStep
 		go p.runCharacter(ctx, character, known, sem, initialDelay)
@@ -113,11 +99,6 @@ func (p *DefaultPoller) Start(ctx context.Context) error {
 
 func (p *DefaultPoller) loadKnownKeys(ctx context.Context, character models.Character) (map[string]struct{}, error) {
 	cutoff := timeutil.WeeklyReset()
-	p.logger.DebugW("loading known keys",
-		"character", character.Key(),
-		"cutoff", cutoff.Format(time.RFC3339),
-	)
-
 	keys, err := p.store.ListKeysByCharacterSince(ctx, character.Name, cutoff)
 	if err != nil {
 		return nil, err
@@ -127,28 +108,12 @@ func (p *DefaultPoller) loadKnownKeys(ctx context.Context, character models.Char
 	for _, key := range keys {
 		keyID := key.KeyIDOrSynthetic()
 		known[keyID] = struct{}{}
-		p.logger.DebugW("known key loaded",
-			"character", character.Key(),
-			"key_id", key.KeyID,
-			"synthetic_id", keyID,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-		)
 	}
-
-	p.logger.DebugW("known keys loaded",
-		"character", character.Key(),
-		"count", len(known),
-	)
 	return known, nil
 }
 
 func (p *DefaultPoller) runCharacter(ctx context.Context, character models.Character, known map[string]struct{}, sem chan struct{}, initialDelay time.Duration) {
 	if initialDelay > 0 {
-		p.logger.DebugW("character poll initial delay",
-			"character", character.Key(),
-			"delay", initialDelay.String(),
-		)
 		select {
 		case <-time.After(initialDelay):
 		case <-ctx.Done():
@@ -157,12 +122,8 @@ func (p *DefaultPoller) runCharacter(ctx context.Context, character models.Chara
 	}
 
 	for {
-		p.logger.DebugW("starting poll for character",
-			"character", character.Key(),
-		)
-
 		if err := p.pollOnce(ctx, character, known, sem); err != nil && !errors.Is(err, context.Canceled) {
-			p.logger.ErrorW("poll failed", "character", character.Key(), "error", err)
+			// Silent error handling
 		}
 
 		wait := p.interval
@@ -174,17 +135,9 @@ func (p *DefaultPoller) runCharacter(ctx context.Context, character models.Chara
 			}
 		}
 
-		p.logger.DebugW("poll complete, waiting for next cycle",
-			"character", character.Key(),
-			"next_poll_in", wait.String(),
-		)
-
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			p.logger.DebugW("character poll stopped",
-				"character", character.Key(),
-			)
 			return
 		}
 	}
@@ -198,108 +151,32 @@ func (p *DefaultPoller) pollOnce(ctx context.Context, character models.Character
 	}
 	defer func() { <-sem }()
 
-	p.logger.DebugW("poll cycle starting",
-		"character", character.Key(),
-		"known_keys", len(known),
-	)
-
 	keys, err := p.client.FetchWeeklyRuns(ctx, character)
 	if err != nil {
-		p.logger.ErrorW("fetch weekly runs failed",
-			"character", character.Key(),
-			"error", err,
-		)
 		return err
 	}
 
-	p.logger.DebugW("fetched keys from raiderio",
-		"character", character.Key(),
-		"fetched_count", len(keys),
-	)
-
 	cutoff := timeutil.WeeklyReset()
-	p.logger.DebugW("using weekly reset cutoff",
-		"cutoff", cutoff.Format(time.RFC3339),
-	)
-
-	newKeysCount := 0
-	skippedCutoff := 0
-	skippedKnown := 0
-	upsertErrors := 0
 
 	for _, key := range keys {
-		p.logger.DebugW("processing key",
-			"character", key.Character,
-			"realm", key.Realm,
-			"region", key.Region,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-			"key_id", key.KeyID,
-			"completed_at", key.CompletedAt,
-		)
-
 		if !afterCutoff(key.CompletedAt, cutoff) {
-			p.logger.DebugW("key skipped: before cutoff",
-				"key_id", key.KeyID,
-				"completed_at", key.CompletedAt,
-				"cutoff", cutoff.Format(time.RFC3339),
-			)
-			skippedCutoff++
 			continue
 		}
 
 		keyID := key.KeyIDOrSynthetic()
 		if _, ok := known[keyID]; ok {
-			p.logger.DebugW("key skipped: already known",
-				"key_id", key.KeyID,
-				"synthetic_id", keyID,
-			)
-			skippedKnown++
 			continue
 		}
-
-		p.logger.DebugW("upserting new key",
-			"key_id", key.KeyID,
-			"synthetic_id", keyID,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-		)
 
 		if err = p.store.UpsertCompletedKey(ctx, key); err != nil {
-			p.logger.ErrorW("store upsert failed",
-				"error", err,
-				"key_id", keyID,
-				"character", key.Character,
-				"dungeon", key.Dungeon,
-			)
-			upsertErrors++
 			continue
 		}
-
-		p.logger.InfoW("new key completed",
-			"character", key.Character,
-			"realm", key.Realm,
-			"region", key.Region,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-			"key_id", key.KeyID,
-		)
 
 		// Attempt WCL linking for new key
 		p.linkToWCL(ctx, key)
 
 		known[keyID] = struct{}{}
-		newKeysCount++
 	}
-
-	p.logger.DebugW("poll cycle complete",
-		"character", character.Key(),
-		"fetched", len(keys),
-		"new_keys", newKeysCount,
-		"skipped_cutoff", skippedCutoff,
-		"skipped_known", skippedKnown,
-		"upsert_errors", upsertErrors,
-	)
 
 	return nil
 }
@@ -307,26 +184,29 @@ func (p *DefaultPoller) pollOnce(ctx context.Context, character models.Character
 // linkToWCL attempts to link a newly detected key to WarcraftLogs.
 func (p *DefaultPoller) linkToWCL(ctx context.Context, key models.CompletedKey) {
 	if p.wclLinker == nil {
+		p.logger.InfoW("[WCL] linker is nil, skipping",
+			"key_id", key.KeyID,
+		)
 		return
 	}
 
-	p.logger.InfoW("attempting WCL link for new key",
+	p.logger.InfoW("[WCL] attempting link for new key",
+		"key_id", key.KeyID,
 		"character", key.Character,
 		"dungeon", key.Dungeon,
 		"level", key.KeyLevel,
-		"key_id", key.KeyID,
 	)
 
 	match, err := p.wclLinker.MatchKey(ctx, key)
 	if err != nil {
-		p.logger.WarnW("WCL match error",
+		p.logger.ErrorW("[WCL] match error",
 			"key_id", key.KeyID,
 			"error", err,
 		)
 		return
 	}
 	if match == nil {
-		p.logger.DebugW("no WCL match found for new key",
+		p.logger.InfoW("[WCL] no match found",
 			"key_id", key.KeyID,
 			"dungeon", key.Dungeon,
 		)
@@ -336,6 +216,14 @@ func (p *DefaultPoller) linkToWCL(ctx context.Context, key models.CompletedKey) 
 	url := warcraftlogs.BuildMythicPlusURL(match.Run)
 	fightID := int64(match.Run.FightID)
 
+	p.logger.InfoW("[WCL] match found, storing link",
+		"key_id", key.KeyID,
+		"report_code", match.Run.ReportCode,
+		"fight_id", fightID,
+		"confidence", match.Confidence,
+		"url", url,
+	)
+
 	link := store.WarcraftLogsLink{
 		KeyID:      key.KeyID,
 		ReportCode: match.Run.ReportCode,
@@ -343,18 +231,16 @@ func (p *DefaultPoller) linkToWCL(ctx context.Context, key models.CompletedKey) 
 		URL:        url,
 	}
 	if err := p.store.UpsertWarcraftLogsLink(ctx, link); err != nil {
-		p.logger.WarnW("failed to store WCL link",
+		p.logger.ErrorW("[WCL] failed to store link",
 			"key_id", key.KeyID,
 			"error", err,
 		)
 		return
 	}
 
-	p.logger.InfoW("WCL link created for new key",
+	p.logger.InfoW("[WCL] link stored successfully",
 		"key_id", key.KeyID,
-		"report_code", match.Run.ReportCode,
 		"url", url,
-		"confidence", match.Confidence,
 	)
 }
 

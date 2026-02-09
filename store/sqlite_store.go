@@ -240,20 +240,8 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 		return errors.New("store is not open")
 	}
 
-	s.log().DebugW("upserting completed key",
-		"character", key.Character,
-		"realm", key.Realm,
-		"region", key.Region,
-		"dungeon", key.Dungeon,
-		"level", key.KeyLevel,
-		"key_id", key.KeyID,
-		"completed_at", key.CompletedAt,
-		"source", key.Source,
-	)
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		s.log().ErrorW("failed to begin transaction", "error", err)
 		return err
 	}
 
@@ -266,29 +254,12 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 	})
 	if err != nil {
 		_ = tx.Rollback()
-		s.log().ErrorW("failed to upsert character",
-			"error", err,
-			"character", key.Character,
-			"realm", key.Realm,
-			"region", key.Region,
-		)
 		return err
 	}
-
-	s.log().DebugW("character upserted",
-		"character_id", characterID,
-		"character", key.Character,
-		"realm", key.Realm,
-		"region", key.Region,
-	)
 
 	keyID := key.KeyID
 	if keyID <= 0 {
 		keyID = syntheticKeyID(key)
-		s.log().DebugW("using synthetic key ID",
-			"original_key_id", key.KeyID,
-			"synthetic_key_id", keyID,
-		)
 	}
 
 	err = queries.InsertCompletedKey(ctx, db.InsertCompletedKeyParams{
@@ -303,25 +274,12 @@ func (s *SQLiteStore) UpsertCompletedKey(ctx context.Context, key models.Complet
 	})
 	if err != nil {
 		_ = tx.Rollback()
-		s.log().ErrorW("failed to insert completed key",
-			"error", err,
-			"key_id", keyID,
-			"dungeon", key.Dungeon,
-		)
 		return err
 	}
 
 	if err := tx.Commit(); err != nil {
-		s.log().ErrorW("failed to commit transaction", "error", err)
 		return err
 	}
-
-	s.log().DebugW("completed key inserted successfully",
-		"key_id", keyID,
-		"character", key.Character,
-		"dungeon", key.Dungeon,
-		"level", key.KeyLevel,
-	)
 
 	// Schedule debounced flush instead of immediate flush
 	s.scheduleFlush()
@@ -400,10 +358,6 @@ func (s *SQLiteStore) ListKeysByCharacterSince(ctx context.Context, character st
 	}
 
 	characterLower := strings.ToLower(character)
-	s.log().DebugW("listing keys by character since",
-		"character", characterLower,
-		"cutoff", cutoff.Format(time.RFC3339),
-	)
 
 	queries := db.New(s.db)
 	rows, err := queries.ListKeysByCharacterSince(ctx, db.ListKeysByCharacterSinceParams{
@@ -411,10 +365,6 @@ func (s *SQLiteStore) ListKeysByCharacterSince(ctx context.Context, character st
 		CompletedAt: cutoff.Format(time.RFC3339),
 	})
 	if err != nil {
-		s.log().ErrorW("failed to list keys by character",
-			"error", err,
-			"character", character,
-		)
 		return nil, err
 	}
 
@@ -433,20 +383,7 @@ func (s *SQLiteStore) ListKeysByCharacterSince(ctx context.Context, character st
 			Source:      row.Source,
 		}
 		out = append(out, key)
-		s.log().DebugW("found key",
-			"character", row.Character,
-			"realm", row.Realm,
-			"region", row.Region,
-			"dungeon", row.Dungeon,
-			"level", row.KeyLvl,
-			"key_id", row.KeyID,
-		)
 	}
-
-	s.log().DebugW("keys found for character",
-		"character", character,
-		"count", len(out),
-	)
 
 	return out, nil
 }
@@ -565,12 +502,9 @@ func (s *SQLiteStore) ListCharacters(ctx context.Context) ([]models.Character, e
 		return nil, errors.New("store is not open")
 	}
 
-	s.log().DebugW("listing all characters")
-
 	queries := db.New(s.db)
 	rows, err := queries.ListCharacters(ctx)
 	if err != nil {
-		s.log().ErrorW("failed to list characters", "error", err)
 		return nil, err
 	}
 
@@ -582,14 +516,8 @@ func (s *SQLiteStore) ListCharacters(ctx context.Context) ([]models.Character, e
 			Name:   row.Name,
 		}
 		out = append(out, char)
-		s.log().DebugW("found character",
-			"name", row.Name,
-			"realm", row.Realm,
-			"region", row.Region,
-		)
 	}
 
-	s.log().DebugW("characters found", "count", len(out))
 	return out, nil
 }
 
