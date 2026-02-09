@@ -60,13 +60,6 @@ func NewSQLiteStore(p Params) *SQLiteStore {
 	}
 }
 
-func (s *SQLiteStore) log() logger.Logger {
-	if s.logger == nil {
-		return logger.NewNop()
-	}
-	return s.logger
-}
-
 // SetFlushDebounce sets the debounce duration for disk flushes.
 // Must be called before Open().
 func (s *SQLiteStore) SetFlushDebounce(d time.Duration) {
