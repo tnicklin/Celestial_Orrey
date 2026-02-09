@@ -185,10 +185,11 @@ func (c *DefaultWCL) FetchCharacterMythicPlus(ctx context.Context, char models.C
 		limit = 10
 	}
 
-	// Convert realm to server slug (lowercase, replace spaces/apostrophes)
+	// Convert realm to server slug (lowercase, remove apostrophes/hyphens/spaces)
 	serverSlug := strings.ToLower(char.Realm)
 	serverSlug = strings.ReplaceAll(serverSlug, "'", "")
-	serverSlug = strings.ReplaceAll(serverSlug, " ", "-")
+	serverSlug = strings.ReplaceAll(serverSlug, "-", "")
+	serverSlug = strings.ReplaceAll(serverSlug, " ", "")
 
 	query := `
 	query($name: String!, $serverSlug: String!, $serverRegion: String!, $limit: Int!) {
