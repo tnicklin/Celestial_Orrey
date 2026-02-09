@@ -19,10 +19,7 @@ import (
 
 var _ Discord = (*DefaultDiscord)(nil)
 
-const (
-	commandPrefix = "!"
-	adminRoleName = "bot-admin"
-)
+const commandPrefix = "!"
 
 // pstLocation is the timezone for formatting times.
 var pstLocation = timeutil.Location()
@@ -192,7 +189,7 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	case "help":
 		response = c.cmdHelp()
 	case "char":
-		response, err = c.cmdChar(ctx, s, m, args)
+		response, err = c.cmdChar(ctx, args)
 	default:
 		return
 	}
@@ -533,28 +530,20 @@ func getVaultSlotColored(keys []models.CompletedKey, index int) string {
 func (c *DefaultDiscord) cmdHelp() string {
 	return `**Available Commands:**
 ` + "```" + `
-!keys <name>    - Show keys for a character
-!keys all       - Show all keys completed this week
-!report         - Show Great Vault progress for all characters
-!report <name>  - Show Great Vault progress for a character
-!help           - Show this help message
-` + "```" + `
-**Admin Commands** (requires bot-admin role):
-` + "```" + `
+!keys <name>               - Show keys for a character
+!keys all                  - Show all keys completed this week
+!report                    - Show Great Vault progress for all characters
+!report <name>             - Show Great Vault progress for a character
 !char sync <name> <realm>  - Sync character from RaiderIO
 !char purge <name> <realm> - Remove character from database
+!help                      - Show this help message
 ` + "```" + `
 *Use realm slugs (e.g., area-52, burning-legion). Region defaults to US.*
 *For ambiguous names, use name-realm format (e.g., askr-mal-ganis)*`
 }
 
-// cmdChar handles character management commands (admin only)
-func (c *DefaultDiscord) cmdChar(ctx context.Context, s *discordgo.Session, m *discordgo.MessageCreate, args []string) (string, error) {
-	// Check for admin role
-	if !c.hasAdminRole(s, m) {
-		return "This command requires the `bot-admin` role.", nil
-	}
-
+// cmdChar handles character management commands.
+func (c *DefaultDiscord) cmdChar(ctx context.Context, args []string) (string, error) {
 	if len(args) < 1 {
 		return "Usage: `!char sync <name> <realm>` or `!char purge <name> <realm>`", nil
 	}
@@ -570,38 +559,6 @@ func (c *DefaultDiscord) cmdChar(ctx context.Context, s *discordgo.Session, m *d
 	default:
 		return "Unknown subcommand. Use `sync` or `purge`.", nil
 	}
-}
-
-// hasAdminRole checks if the message author has the bot-admin role
-func (c *DefaultDiscord) hasAdminRole(s *discordgo.Session, m *discordgo.MessageCreate) bool {
-	if s == nil || m == nil || m.Member == nil {
-		return false
-	}
-
-	roles, err := s.GuildRoles(m.GuildID)
-	if err != nil {
-		return false
-	}
-
-	var adminRoleID string
-	for _, role := range roles {
-		if strings.EqualFold(role.Name, adminRoleName) {
-			adminRoleID = role.ID
-			break
-		}
-	}
-
-	if adminRoleID == "" {
-		return false
-	}
-
-	for _, roleID := range m.Member.Roles {
-		if roleID == adminRoleID {
-			return true
-		}
-	}
-
-	return false
 }
 
 // cmdCharSync syncs a character from RaiderIO and links WarcraftLogs
