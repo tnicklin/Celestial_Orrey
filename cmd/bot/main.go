@@ -14,7 +14,6 @@ import (
 
 	"github.com/tnicklin/celestial_orrey/discord"
 	"github.com/tnicklin/celestial_orrey/logger"
-	"github.com/tnicklin/celestial_orrey/models"
 	"github.com/tnicklin/celestial_orrey/raiderio"
 	raiderioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
 	"github.com/tnicklin/celestial_orrey/store"
@@ -39,7 +38,6 @@ type appConfig struct {
 	RaiderIO     raiderio.Config     `yaml:"raiderio"`
 	WarcraftLogs warcraftlogs.Config `yaml:"warcraftlogs"`
 	Store        store.Config        `yaml:"store"`
-	Characters   []models.Character  `yaml:"characters"`
 }
 
 type result struct {
@@ -88,11 +86,10 @@ func build() (result, error) {
 	})
 
 	rioPoller := raiderio.New(raiderio.Params{
-		Config:     cfg.RaiderIO,
-		Client:     rioClient,
-		Store:      st,
-		WCLLinker:  wclLinker,
-		Characters: cfg.Characters,
+		Config:    cfg.RaiderIO,
+		Client:    rioClient,
+		Store:     st,
+		WCLLinker: wclLinker,
 	})
 
 	wclPoller := warcraftlogs.NewPoller(warcraftlogs.PollerParams{
@@ -196,12 +193,6 @@ func loadConfig(dir string) (appConfig, error) {
 	var cfg appConfig
 	if err = provider.Get(config.Root).Populate(&cfg); err != nil {
 		return appConfig{}, err
-	}
-
-	for i := range cfg.Characters {
-		cfg.Characters[i].Name = strings.ToLower(cfg.Characters[i].Name)
-		cfg.Characters[i].Realm = strings.ToLower(cfg.Characters[i].Realm)
-		cfg.Characters[i].Region = strings.ToLower(cfg.Characters[i].Region)
 	}
 
 	return cfg, nil

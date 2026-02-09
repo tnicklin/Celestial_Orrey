@@ -19,7 +19,8 @@ func (f *fakeClient) FetchWeeklyRuns(ctx context.Context, c models.Character) ([
 }
 
 type fakeStore struct {
-	seen []models.CompletedKey
+	characters []models.Character
+	seen       []models.CompletedKey
 }
 
 func (f *fakeStore) Open(ctx context.Context) error { return nil }
@@ -49,7 +50,7 @@ func (f *fakeStore) ListWarcraftLogsLinksForKey(ctx context.Context, keyID int64
 	return nil, nil
 }
 func (f *fakeStore) ListCharacters(ctx context.Context) ([]models.Character, error) {
-	return nil, nil
+	return f.characters, nil
 }
 func (f *fakeStore) GetCharacter(ctx context.Context, name, realm, region string) (*models.Character, error) {
 	return nil, nil
@@ -61,8 +62,7 @@ func (f *fakeStore) ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time)
 	return nil, nil
 }
 
-func TestPollerFiltersAndAnnounces(t *testing.T) {
-	// Use a fixed cutoff time for testing
+func TestPollerFiltersKeys(t *testing.T) {
 	cutoff := timeutil.WeeklyReset()
 	after := cutoff.Add(24 * time.Hour).Format(time.RFC3339)
 	before := cutoff.Add(-24 * time.Hour).Format(time.RFC3339)
@@ -93,20 +93,22 @@ func TestPollerFiltersAndAnnounces(t *testing.T) {
 			Source:      "raiderio",
 		},
 	}}
-	st := &fakeStore{}
+	st := &fakeStore{
+		characters: []models.Character{{Region: "us", Realm: "illidan", Name: "Arthas"}},
+	}
 
 	poller := New(Params{
-		Client:     client,
-		Store:      st,
-		Characters: []models.Character{{Region: "us", Realm: "illidan", Name: "Arthas"}},
+		Client: client,
+		Store:  st,
 	})
 
-	known := map[string]struct{}{}
-	err := poller.pollOnce(context.Background(), models.Character{Region: "us", Realm: "illidan", Name: "Arthas"}, known, make(chan struct{}, 1))
-	if err != nil {
-		t.Fatalf("poll once error: %v", err)
-	}
+	// Manually call pollCharacter to test filtering
+	poller.pollCharacter(context.Background(), models.Character{Region: "us", Realm: "illidan", Name: "Arthas"})
+
 	if len(st.seen) != 1 {
-		t.Fatalf("expected 1 stored key, got %d", len(st.seen))
+		t.Fatalf("expected 1 stored key (after cutoff), got %d", len(st.seen))
+	}
+	if st.seen[0].KeyID != 1 {
+		t.Fatalf("expected key ID 1, got %d", st.seen[0].KeyID)
 	}
 }

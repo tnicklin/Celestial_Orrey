@@ -16,11 +16,3 @@ raiderio:
 store:
   path: data/celestial_orrey.db
   backup_dir: data/backup
-
-characters:
-  - name: Askr
-    realm: Mal'Ganis
-    region: us
-  - name: Askrm
-    realm: Mal'Ganis
-    region: us
