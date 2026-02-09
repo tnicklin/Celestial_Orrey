@@ -109,17 +109,3 @@ func TestPollerFiltersAndAnnounces(t *testing.T) {
 		t.Fatalf("expected 1 stored key, got %d", len(st.seen))
 	}
 }
-
-func TestFormatAnnouncement(t *testing.T) {
-	key := models.CompletedKey{
-		Character: "Arthas",
-		Dungeon:   "Mists",
-		KeyLevel:  10,
-		RunTimeMS: 100000,
-		ParTimeMS: 120000,
-	}
-	msg := formatAnnouncement(key)
-	if msg == "" {
-		t.Fatalf("expected formatted message")
-	}
-}

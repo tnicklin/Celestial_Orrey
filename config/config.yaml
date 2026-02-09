@@ -5,8 +5,7 @@ logger:
 
 discord:
   guild_id: "1470164460000907482"
-  command_channel: "1470164461619777718"
-  report_channel: "1470164461619777718"
+  listen_channel: "1470164461619777718"
 
 raiderio:
   base_url: https://raider.io

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
 )
@@ -22,7 +21,6 @@ type Poller interface {
 type DefaultPoller struct {
 	store       store.Store
 	client      WCL
-	logger      logger.Logger
 	interval    time.Duration
 	matchWindow time.Duration
 	stop        chan struct{}
@@ -33,18 +31,12 @@ type DefaultPoller struct {
 type PollerParams struct {
 	Store       store.Store
 	Client      WCL
-	Logger      logger.Logger
 	Interval    time.Duration
 	MatchWindow time.Duration
 }
 
 // NewPoller creates a new WCL background linker poller.
 func NewPoller(p PollerParams) *DefaultPoller {
-	log := p.Logger
-	if log == nil {
-		log = logger.NewNop()
-	}
-
 	interval := p.Interval
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -58,7 +50,6 @@ func NewPoller(p PollerParams) *DefaultPoller {
 	return &DefaultPoller{
 		store:       p.Store,
 		client:      p.Client,
-		logger:      log,
 		interval:    interval,
 		matchWindow: matchWindow,
 	}
@@ -75,8 +66,6 @@ func (p *DefaultPoller) Start(ctx context.Context) error {
 
 	p.stop = make(chan struct{})
 	p.done = make(chan struct{})
-
-	p.logger.InfoW("[WCL] poller starting", "interval", p.interval.String())
 
 	go p.run(ctx)
 	return nil
@@ -116,35 +105,19 @@ func (p *DefaultPoller) pollOnce(ctx context.Context) {
 	matchWindow := time.Since(cutoff) + 24*time.Hour
 
 	keys, err := p.store.ListUnlinkedKeysSince(ctx, cutoff)
-	if err != nil {
-		p.logger.ErrorW("[WCL] poller: list unlinked keys failed", "error", err)
+	if err != nil || len(keys) == 0 {
 		return
 	}
-
-	if len(keys) == 0 {
-		return
-	}
-
-	p.logger.InfoW("[WCL] poller: found unlinked keys", "count", len(keys))
 
 	linker := NewLinker(LinkerParams{
 		Store:  p.store,
 		Client: p.client,
-		Logger: p.logger,
 	})
 	linker.MatchWindow = matchWindow
 
-	linkedCount := 0
 	for _, key := range keys {
 		match, err := linker.MatchKey(ctx, key)
-		if err != nil {
-			p.logger.ErrorW("[WCL] poller: match error",
-				"key_id", key.KeyID,
-				"error", err,
-			)
-			continue
-		}
-		if match == nil {
+		if err != nil || match == nil {
 			continue
 		}
 
@@ -157,26 +130,6 @@ func (p *DefaultPoller) pollOnce(ctx context.Context) {
 			FightID:    &fightID,
 			URL:        url,
 		}
-		if err := p.store.UpsertWarcraftLogsLink(ctx, link); err != nil {
-			p.logger.ErrorW("[WCL] poller: store link failed",
-				"key_id", key.KeyID,
-				"error", err,
-			)
-			continue
-		}
-
-		linkedCount++
-		p.logger.InfoW("[WCL] poller: link created",
-			"key_id", key.KeyID,
-			"dungeon", key.Dungeon,
-			"url", url,
-		)
-	}
-
-	if linkedCount > 0 {
-		p.logger.InfoW("[WCL] poller: poll complete",
-			"unlinked", len(keys),
-			"linked", linkedCount,
-		)
+		_ = p.store.UpsertWarcraftLogsLink(ctx, link)
 	}
 }

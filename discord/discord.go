@@ -2,7 +2,6 @@ package discord
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -25,22 +24,18 @@ const (
 	adminRoleName = "bot-admin"
 )
 
-// pstLocation is the timezone for scheduling reports.
+// pstLocation is the timezone for formatting times.
 var pstLocation = timeutil.Location()
 
 type DefaultDiscord struct {
-	session        *discordgo.Session
-	guildID        string
-	channels       map[string]string
-	commandChannel string
-	reportChannel  string
-	store          store.Store
-	raiderIO       rioClient.Client
-	warcraftLogs   warcraftlogs.WCL
-	logger         logger.Logger
-	removeHandler  func()
-	stopScheduler  chan struct{}
-	schedulerDone  chan struct{}
+	session       *discordgo.Session
+	guildID       string
+	listenChannel string
+	store         store.Store
+	raiderIO      rioClient.Client
+	warcraftLogs  warcraftlogs.WCL
+	logger        logger.Logger
+	removeHandler func()
 }
 
 type Params struct {
@@ -65,15 +60,13 @@ func New(p Params) (*DefaultDiscord, error) {
 	}
 
 	return &DefaultDiscord{
-		session:        session,
-		guildID:        cfg.GuildID,
-		commandChannel: cfg.CommandChannel,
-		reportChannel:  cfg.ReportChannel,
-		store:          p.Store,
-		raiderIO:       p.RaiderIO,
-		warcraftLogs:   p.WarcraftLogs,
-		logger:         log,
-		channels:       make(map[string]string),
+		session:       session,
+		guildID:       cfg.GuildID,
+		listenChannel: cfg.ListenChannel,
+		store:         p.Store,
+		raiderIO:      p.RaiderIO,
+		warcraftLogs:  p.WarcraftLogs,
+		logger:        log,
 	}, nil
 }
 
@@ -83,11 +76,6 @@ func (c *DefaultDiscord) Start(ctx context.Context) error {
 	}
 
 	c.removeHandler = c.session.AddHandler(c.handleMessage)
-	c.stopScheduler = make(chan struct{})
-	c.schedulerDone = make(chan struct{})
-
-	go c.runScheduler()
-
 	return nil
 }
 
@@ -96,85 +84,7 @@ func (c *DefaultDiscord) Stop() {
 		c.removeHandler()
 		c.removeHandler = nil
 	}
-	if c.stopScheduler != nil {
-		close(c.stopScheduler)
-		<-c.schedulerDone
-	}
 	c.session.Close()
-}
-
-func (c *DefaultDiscord) runScheduler() {
-	defer close(c.schedulerDone)
-
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	var lastMidnight, lastMorning time.Time
-
-	for {
-		select {
-		case <-c.stopScheduler:
-			return
-		case now := <-ticker.C:
-			pstNow := now.In(pstLocation)
-
-			if pstNow.Hour() == 0 && pstNow.Minute() == 0 {
-				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 0, 0, 0, 0, pstLocation)
-				if !today.Equal(lastMidnight) {
-					lastMidnight = today
-					c.postDailyReport()
-				}
-			}
-
-			if pstNow.Hour() == 8 && pstNow.Minute() == 0 {
-				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 8, 0, 0, 0, pstLocation)
-				if !today.Equal(lastMorning) {
-					lastMorning = today
-					c.postWeeklyProgress()
-				}
-			}
-		}
-	}
-}
-
-func (c *DefaultDiscord) postDailyReport() {
-	ctx := context.Background()
-
-	// Yesterday in PST
-	now := time.Now().In(pstLocation)
-	yesterday := time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, pstLocation)
-	endOfYesterday := yesterday.Add(24 * time.Hour)
-
-	report, err := c.generateKeysReport(ctx, yesterday, endOfYesterday, "Daily Report - "+yesterday.Format("Jan 2, 2006"))
-	if err != nil {
-		c.logger.ErrorW("failed to generate daily report", "error", err)
-		return
-	}
-
-	if report == "" {
-		return // No keys to report
-	}
-
-	if err := c.WriteMessage(c.reportChannel, report); err != nil {
-		c.logger.ErrorW("failed to post daily report", "error", err)
-	}
-}
-
-func (c *DefaultDiscord) postWeeklyProgress() {
-	ctx := context.Background()
-
-	// Get current week's reset time
-	resetTime := timeutil.WeeklyReset()
-
-	report, err := c.generateWeeklyProgressReport(ctx, resetTime)
-	if err != nil {
-		c.logger.ErrorW("failed to generate weekly progress report", "error", err)
-		return
-	}
-
-	if err := c.WriteMessage(c.reportChannel, report); err != nil {
-		c.logger.ErrorW("failed to post weekly progress report", "error", err)
-	}
 }
 
 func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -182,11 +92,9 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		return
 	}
 
-	if c.commandChannel != "" {
-		channelID := c.resolveChannelID(c.commandChannel)
-		if m.ChannelID != channelID {
-			return
-		}
+	// Only respond in the configured listen channel
+	if c.listenChannel != "" && m.ChannelID != c.listenChannel {
+		return
 	}
 
 	if !strings.HasPrefix(m.Content, commandPrefix) {
@@ -203,13 +111,6 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	args := parts[1:]
 
 	ctx := context.Background()
-
-	c.logger.InfoW("command received",
-		"command", cmd,
-		"args", args,
-		"user", m.Author.Username,
-		"channel", m.ChannelID,
-	)
 
 	var response string
 	var err error
@@ -262,7 +163,6 @@ func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (string, er
 }
 
 func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, since time.Time) (string, error) {
-	// Get all characters
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
 		return "", err
@@ -328,13 +228,8 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 }
 
 func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.Time) (string, error) {
-	c.logger.DebugW("formatting all character keys",
-		"since", since.Format(time.RFC3339),
-	)
-
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
-		c.logger.ErrorW("failed to list characters", "error", err)
 		return "", err
 	}
 
@@ -342,10 +237,6 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 	sort.Slice(allChars, func(i, j int) bool {
 		return allChars[i].Name < allChars[j].Name
 	})
-
-	c.logger.DebugW("listed characters",
-		"count", len(allChars),
-	)
 
 	if len(allChars) == 0 {
 		return "No characters in database.", nil
@@ -356,49 +247,18 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 
 	hasKeys := false
 	for _, char := range allChars {
-		c.logger.DebugW("querying keys for character",
-			"name", char.Name,
-			"realm", char.Realm,
-			"region", char.Region,
-		)
-
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 		if err != nil {
-			c.logger.ErrorW("failed to list keys for character",
-				"error", err,
-				"character", char.Name,
-			)
 			continue
 		}
-
-		c.logger.DebugW("keys returned from store",
-			"character", char.Name,
-			"raw_count", len(keys),
-		)
 
 		// Filter to only this realm
 		var charKeys []models.CompletedKey
 		for _, key := range keys {
-			realmMatch := strings.EqualFold(key.Realm, char.Realm)
-			regionMatch := strings.EqualFold(key.Region, char.Region)
-			c.logger.DebugW("key realm/region check",
-				"character", char.Name,
-				"key_realm", key.Realm,
-				"char_realm", char.Realm,
-				"realm_match", realmMatch,
-				"key_region", key.Region,
-				"char_region", char.Region,
-				"region_match", regionMatch,
-			)
-			if realmMatch && regionMatch {
+			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
 				charKeys = append(charKeys, key)
 			}
 		}
-
-		c.logger.DebugW("keys after filter",
-			"character", char.Name,
-			"filtered_count", len(charKeys),
-		)
 
 		if len(charKeys) == 0 {
 			continue
@@ -431,81 +291,13 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 		// Get WCL link if available
 		wclLink := ""
 		links, err := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
-		if err != nil {
-			c.logger.DebugW("WCL link query error",
-				"key_id", key.KeyID,
-				"error", err,
-			)
-		} else if len(links) > 0 {
+		if err == nil && len(links) > 0 {
 			wclLink = fmt.Sprintf(" [log](<%s>)", links[0].URL)
-			c.logger.DebugW("WCL link found",
-				"key_id", key.KeyID,
-				"url", links[0].URL,
-			)
-		} else {
-			c.logger.DebugW("no WCL link found",
-				"key_id", key.KeyID,
-			)
 		}
 
 		sb.WriteString(fmt.Sprintf("• [%s] %d %s %s%s\n", completedAt, key.KeyLevel, dungeonShort, timing, wclLink))
 	}
 	sb.WriteString("\n")
-}
-
-func (c *DefaultDiscord) generateKeysReport(ctx context.Context, start, end time.Time, title string) (string, error) {
-	if c.store == nil {
-		return "", errors.New("database not configured")
-	}
-
-	allChars, err := c.store.ListCharacters(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Sort characters by name for deterministic output
-	sort.Slice(allChars, func(i, j int) bool {
-		return allChars[i].Name < allChars[j].Name
-	})
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**%s**\n\n", title))
-
-	hasKeys := false
-	for _, char := range allChars {
-		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, start)
-		if err != nil {
-			continue
-		}
-
-		// Filter to this realm and within time range
-		var charKeys []models.CompletedKey
-		for _, key := range keys {
-			if !strings.EqualFold(key.Realm, char.Realm) || !strings.EqualFold(key.Region, char.Region) {
-				continue
-			}
-			keyTime, err := timeutil.ParseRFC3339(key.CompletedAt)
-			if err != nil {
-				continue
-			}
-			if keyTime.Before(end) {
-				charKeys = append(charKeys, key)
-			}
-		}
-
-		if len(charKeys) == 0 {
-			continue
-		}
-
-		hasKeys = true
-		c.writeCharacterSection(ctx, &sb, char, charKeys)
-	}
-
-	if !hasKeys {
-		return "", nil // Return empty to skip posting
-	}
-
-	return sb.String(), nil
 }
 
 // cmdReport handles the !report command for weekly vault progress.
@@ -518,11 +310,9 @@ func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (string, 
 	resetTime := timeutil.WeeklyReset()
 
 	if len(args) > 0 {
-		// Report for specific character
 		return c.formatCharacterReport(ctx, args[0], resetTime)
 	}
 
-	// Report for all characters
 	return c.formatAllCharactersReport(ctx, resetTime)
 }
 
@@ -576,13 +366,8 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 }
 
 func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since time.Time) (string, error) {
-	c.logger.DebugW("generating all characters report",
-		"since", since.Format(time.RFC3339),
-	)
-
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
-		c.logger.ErrorW("failed to list characters", "error", err)
 		return "", err
 	}
 
@@ -590,10 +375,6 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 	sort.Slice(allChars, func(i, j int) bool {
 		return allChars[i].Name < allChars[j].Name
 	})
-
-	c.logger.DebugW("listed characters for report",
-		"count", len(allChars),
-	)
 
 	if len(allChars) == 0 {
 		return "No characters in database.", nil
@@ -613,41 +394,9 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 
 	hasKeys := false
 	for _, char := range allChars {
-		c.logger.DebugW("querying keys for character",
-			"name", char.Name,
-			"realm", char.Realm,
-			"region", char.Region,
-			"since", since.Format(time.RFC3339),
-		)
-
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 		if err != nil {
-			c.logger.ErrorW("failed to list keys for character",
-				"error", err,
-				"character", char.Name,
-			)
 			continue
-		}
-
-		c.logger.DebugW("keys returned from store",
-			"character", char.Name,
-			"raw_count", len(keys),
-		)
-
-		// Log all keys before filtering
-		for i, key := range keys {
-			c.logger.DebugW("key before realm filter",
-				"index", i,
-				"character", key.Character,
-				"key_realm", key.Realm,
-				"key_region", key.Region,
-				"char_realm", char.Realm,
-				"char_region", char.Region,
-				"realm_match", strings.EqualFold(key.Realm, char.Realm),
-				"region_match", strings.EqualFold(key.Region, char.Region),
-				"dungeon", key.Dungeon,
-				"level", key.KeyLevel,
-			)
 		}
 
 		var charKeys []models.CompletedKey
@@ -656,13 +405,6 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 				charKeys = append(charKeys, key)
 			}
 		}
-
-		c.logger.DebugW("keys after realm/region filter",
-			"character", char.Name,
-			"char_realm", char.Realm,
-			"char_region", char.Region,
-			"filtered_count", len(charKeys),
-		)
 
 		hasKeys = true
 		sortKeysByLevel(charKeys)
@@ -699,10 +441,6 @@ func (c *DefaultDiscord) writeReportLineAligned(sb *strings.Builder, name string
 		paddedName, keyCount, vault1, vault2, vault3))
 }
 
-func (c *DefaultDiscord) generateWeeklyProgressReport(ctx context.Context, resetTime time.Time) (string, error) {
-	return c.formatAllCharactersReport(ctx, resetTime)
-}
-
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
 func sortKeysByLevel(keys []models.CompletedKey) {
 	for i := 0; i < len(keys)-1; i++ {
@@ -712,15 +450,6 @@ func sortKeysByLevel(keys []models.CompletedKey) {
 			}
 		}
 	}
-}
-
-// getVaultSlot returns the vault slot display for a given index (0-based)
-func getVaultSlot(keys []models.CompletedKey, index int) string {
-	if index >= len(keys) {
-		return EmptySlotDisplay()
-	}
-	keyLevel := keys[index].KeyLevel
-	return VaultRewards.GetVaultSlotDisplay(keyLevel)
 }
 
 // getVaultSlotColored returns the colored vault slot display for ANSI code blocks
@@ -747,14 +476,10 @@ func (c *DefaultDiscord) cmdHelp() string {
 !char purge <name> <realm> - Remove character from database
 ` + "```" + `
 *Use realm slugs (e.g., area-52, burning-legion). Region defaults to US.*
-*For ambiguous names, use name-realm format (e.g., askr-mal-ganis)*
-*Automatic reports post at midnight (daily) and 8am (weekly progress) PST*`
+*For ambiguous names, use name-realm format (e.g., askr-mal-ganis)*`
 }
 
 // cmdChar handles character management commands (admin only)
-// Usage: !char sync <name> <realm>
-//
-//	!char purge <name> <realm>
 func (c *DefaultDiscord) cmdChar(ctx context.Context, s *discordgo.Session, m *discordgo.MessageCreate, args []string) (string, error) {
 	// Check for admin role
 	if !c.hasAdminRole(s, m) {
@@ -784,14 +509,11 @@ func (c *DefaultDiscord) hasAdminRole(s *discordgo.Session, m *discordgo.Message
 		return false
 	}
 
-	// Get guild roles
 	roles, err := s.GuildRoles(m.GuildID)
 	if err != nil {
-		c.logger.ErrorW("failed to get guild roles", "error", err)
 		return false
 	}
 
-	// Find the admin role ID
 	var adminRoleID string
 	for _, role := range roles {
 		if strings.EqualFold(role.Name, adminRoleName) {
@@ -801,11 +523,9 @@ func (c *DefaultDiscord) hasAdminRole(s *discordgo.Session, m *discordgo.Message
 	}
 
 	if adminRoleID == "" {
-		c.logger.WarnW("admin role not found", "role_name", adminRoleName)
 		return false
 	}
 
-	// Check if user has the role
 	for _, roleID := range m.Member.Roles {
 		if roleID == adminRoleID {
 			return true
@@ -834,82 +554,18 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		Region: "us",
 	}
 
-	c.logger.InfoW("syncing character",
-		"name", char.Name,
-		"realm", char.Realm,
-		"region", char.Region,
-	)
-
 	// Fetch keys from RaiderIO
 	keys, err := c.raiderIO.FetchWeeklyRuns(ctx, char)
 	if err != nil {
-		c.logger.ErrorW("failed to fetch from RaiderIO",
-			"error", err,
-			"character", char.Name,
-			"realm", char.Realm,
-		)
 		return "", fmt.Errorf("failed to fetch from RaiderIO: %w", err)
-	}
-
-	c.logger.InfoW("fetched keys from RaiderIO",
-		"character", char.Name,
-		"realm", char.Realm,
-		"count", len(keys),
-	)
-
-	// Log each key fetched
-	for i, key := range keys {
-		c.logger.DebugW("fetched key details",
-			"index", i,
-			"character", key.Character,
-			"realm", key.Realm,
-			"region", key.Region,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-			"key_id", key.KeyID,
-			"completed_at", key.CompletedAt,
-		)
 	}
 
 	// Upsert keys into database
 	insertedCount := 0
 	for _, key := range keys {
-		c.logger.DebugW("upserting key to database",
-			"key_id", key.KeyID,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-		)
-		if err := c.store.UpsertCompletedKey(ctx, key); err != nil {
-			c.logger.WarnW("failed to upsert key",
-				"key_id", key.KeyID,
-				"dungeon", key.Dungeon,
-				"error", err,
-			)
-		} else {
+		if err := c.store.UpsertCompletedKey(ctx, key); err == nil {
 			insertedCount++
-			c.logger.DebugW("key upserted successfully",
-				"key_id", key.KeyID,
-				"dungeon", key.Dungeon,
-			)
 		}
-	}
-
-	c.logger.InfoW("keys upserted to database",
-		"character", char.Name,
-		"attempted", len(keys),
-		"successful", insertedCount,
-	)
-
-	// Verify keys were actually inserted
-	resetTime := timeutil.WeeklyReset()
-	verifyKeys, verifyErr := c.store.ListKeysByCharacterSince(ctx, char.Name, resetTime)
-	if verifyErr != nil {
-		c.logger.ErrorW("failed to verify inserted keys", "error", verifyErr)
-	} else {
-		c.logger.InfoW("verification: keys in DB after sync",
-			"character", char.Name,
-			"keys_in_db", len(verifyKeys),
-		)
 	}
 
 	// Link WarcraftLogs if available
@@ -918,48 +574,17 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		linker := warcraftlogs.NewLinker(warcraftlogs.LinkerParams{
 			Store:  c.store,
 			Client: c.warcraftLogs,
-			Logger: c.logger,
 		})
-		linker.MatchWindow = 24 * time.Hour // Aggressive: 24 hour window for matching
-
-		c.logger.InfoW("starting WCL linking",
-			"character", char.Name,
-			"keys_to_link", len(keys),
-			"match_window", linker.MatchWindow,
-		)
+		linker.MatchWindow = 24 * time.Hour
 
 		for _, key := range keys {
-			// Check if already linked
 			existingLinks, _ := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
 			if len(existingLinks) > 0 {
-				c.logger.DebugW("key already has WCL link",
-					"key_id", key.KeyID,
-					"existing_links", len(existingLinks),
-				)
 				continue
 			}
-
-			c.logger.DebugW("attempting WCL match",
-				"key_id", key.KeyID,
-				"dungeon", key.Dungeon,
-				"level", key.KeyLevel,
-				"completed_at", key.CompletedAt,
-			)
 
 			match, err := linker.MatchKey(ctx, key)
-			if err != nil {
-				c.logger.WarnW("WCL match error",
-					"key_id", key.KeyID,
-					"dungeon", key.Dungeon,
-					"error", err,
-				)
-				continue
-			}
-			if match == nil {
-				c.logger.DebugW("no WCL match found",
-					"key_id", key.KeyID,
-					"dungeon", key.Dungeon,
-				)
+			if err != nil || match == nil {
 				continue
 			}
 
@@ -972,28 +597,11 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 				FightID:    &fightID,
 				URL:        url,
 			}
-			if err := c.store.UpsertWarcraftLogsLink(ctx, link); err != nil {
-				c.logger.WarnW("failed to store WCL link", "key_id", key.KeyID, "error", err)
-				continue
+			if err := c.store.UpsertWarcraftLogsLink(ctx, link); err == nil {
+				linkedCount++
 			}
-			linkedCount++
-			c.logger.InfoW("WCL link created",
-				"key_id", key.KeyID,
-				"report_code", match.Run.ReportCode,
-				"fight_id", fightID,
-				"url", url,
-				"confidence", match.Confidence,
-			)
 		}
 	}
-
-	c.logger.InfoW("character sync complete",
-		"character", char.Name,
-		"realm", char.Realm,
-		"keys_fetched", len(keys),
-		"keys_inserted", insertedCount,
-		"wcl_links_created", linkedCount,
-	)
 
 	return fmt.Sprintf("Synced **%s** (%s-%s): %d keys fetched, %d inserted, %d WCL links created.",
 		char.Name, char.Realm, char.Region, len(keys), insertedCount, linkedCount), nil
@@ -1054,7 +662,6 @@ func formatTimingDiff(runTimeMS, parTimeMS int64) string {
 }
 
 func shortenDungeonName(dungeon string) string {
-	// Common abbreviations
 	replacements := map[string]string{
 		"Operation: Floodgate":        "Floodgate",
 		"Ara-Kara, City of Echoes":    "Ara-Kara",
@@ -1072,85 +679,10 @@ func shortenDungeonName(dungeon string) string {
 	return dungeon
 }
 
-func (c *DefaultDiscord) resolveChannelID(nameOrID string) string {
-	lower := strings.ToLower(strings.TrimSpace(nameOrID))
-	if id, ok := c.channels[lower]; ok {
-		return id
-	}
-	return nameOrID
-}
-
-func (c *DefaultDiscord) ResolveChannels(ctx context.Context, names []string) error {
+func (c *DefaultDiscord) WriteMessage(channelID, msg string) error {
 	if c.session == nil {
 		return errors.New("discord session is nil")
 	}
-	channels, err := c.session.GuildChannels(c.guildID)
-	if err != nil {
-		return err
-	}
-	nameSet := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		nameSet[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
-	}
-	for _, ch := range channels {
-		if ch == nil {
-			continue
-		}
-		lower := strings.ToLower(strings.TrimPrefix(ch.Name, "#"))
-		if _, ok := nameSet[lower]; ok {
-			c.channels[lower] = ch.ID
-		}
-	}
-	for _, name := range names {
-		key := strings.ToLower(strings.TrimSpace(name))
-		if _, ok := c.channels[key]; !ok {
-			return fmt.Errorf("discord channel not found: %s", name)
-		}
-	}
-	return nil
-}
-
-func (c *DefaultDiscord) WriteMessage(channelNameOrID, msg string) error {
-	if c.session == nil {
-		return errors.New("discord session is nil")
-	}
-	channelID := c.resolveChannelID(channelNameOrID)
 	_, err := c.session.ChannelMessageSend(channelID, msg)
 	return err
-}
-
-func (c *DefaultDiscord) GetCompletedKeysSince(cutoff time.Time) ([]models.CompletedKey, error) {
-	channelID, ok := c.channels["completed-keys"]
-	if !ok {
-		return nil, errors.New("completed-keys channel not resolved")
-	}
-
-	var out []models.CompletedKey
-	before := ""
-	for {
-		msgs, err := c.session.ChannelMessages(channelID, 100, before, "", "")
-		if err != nil {
-			return nil, err
-		}
-		if len(msgs) == 0 {
-			break
-		}
-		for _, msg := range msgs {
-			var key models.CompletedKey
-			if err := json.Unmarshal([]byte(msg.Content), &key); err != nil {
-				continue
-			}
-			parsed, err := timeutil.ParseRFC3339(key.CompletedAt)
-			if err != nil {
-				continue
-			}
-			if parsed.After(cutoff) {
-				out = append(out, key)
-			} else {
-				return out, nil
-			}
-		}
-		before = msgs[len(msgs)-1].ID
-	}
-	return out, nil
 }

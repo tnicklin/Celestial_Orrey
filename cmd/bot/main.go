@@ -78,7 +78,6 @@ func build() (result, error) {
 	wclLinker := warcraftlogs.NewLinker(warcraftlogs.LinkerParams{
 		Store:  st,
 		Client: wclClient,
-		Logger: appLogger,
 	})
 
 	rioClient := raiderioClient.New(raiderioClient.Params{
@@ -93,13 +92,11 @@ func build() (result, error) {
 		Store:      st,
 		WCLLinker:  wclLinker,
 		Characters: cfg.Characters,
-		Logger:     appLogger,
 	})
 
 	wclPoller := warcraftlogs.NewPoller(warcraftlogs.PollerParams{
 		Store:    st,
 		Client:   wclClient,
-		Logger:   appLogger,
 		Interval: 5 * time.Minute,
 	})
 

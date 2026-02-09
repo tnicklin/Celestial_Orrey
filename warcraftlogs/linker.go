@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
@@ -18,7 +17,6 @@ type Linker struct {
 	Store        store.Store
 	Client       WCL
 	Filter       ReportFilter
-	Logger       logger.Logger
 	MatchWindow  time.Duration
 	PreBuffer    time.Duration
 	PostBuffer   time.Duration
@@ -29,19 +27,13 @@ type LinkerParams struct {
 	Store  store.Store
 	Client WCL
 	Filter ReportFilter
-	Logger logger.Logger
 }
 
 func NewLinker(p LinkerParams) *Linker {
-	log := p.Logger
-	if log == nil {
-		log = logger.NewNop()
-	}
 	return &Linker{
 		Store:       p.Store,
 		Client:      p.Client,
 		Filter:      p.Filter,
-		Logger:      log,
 		MatchWindow: time.Since(timeutil.WeeklyReset()) + 24*time.Hour,
 		PreBuffer:   15 * time.Minute,
 		PostBuffer:  30 * time.Minute,
@@ -190,53 +182,17 @@ func (l *Linker) MatchKey(ctx context.Context, key models.CompletedKey) (*MatchR
 		Region: key.Region,
 	}
 
-	l.Logger.InfoW("[WCL] MatchKey: fetching runs",
-		"character", char.Name,
-		"realm", char.Realm,
-		"dungeon", key.Dungeon,
-		"level", key.KeyLevel,
-	)
-
 	runs, err := l.Client.FetchCharacterMythicPlus(ctx, char, 10)
 	if err != nil {
-		l.Logger.ErrorW("[WCL] MatchKey: fetch failed",
-			"character", char.Name,
-			"error", err,
-		)
 		return nil, err
 	}
-
-	l.Logger.InfoW("[WCL] MatchKey: fetched runs",
-		"character", char.Name,
-		"runs_count", len(runs),
-	)
 
 	keyTime, err := timeutil.ParseRFC3339(key.CompletedAt)
 	if err != nil {
-		l.Logger.ErrorW("[WCL] MatchKey: parse time failed",
-			"completed_at", key.CompletedAt,
-			"error", err,
-		)
 		return nil, err
 	}
 
-	result := matchKeyToRuns(key, keyTime, runs, l.DungeonMatch, l.MatchWindow)
-	if result == nil {
-		l.Logger.InfoW("[WCL] MatchKey: no match",
-			"key_id", key.KeyID,
-			"dungeon", key.Dungeon,
-			"level", key.KeyLevel,
-		)
-	} else {
-		l.Logger.InfoW("[WCL] MatchKey: match found",
-			"key_id", key.KeyID,
-			"dungeon", key.Dungeon,
-			"report_code", result.Run.ReportCode,
-			"confidence", result.Confidence,
-		)
-	}
-
-	return result, nil
+	return matchKeyToRuns(key, keyTime, runs, l.DungeonMatch, l.MatchWindow), nil
 }
 
 // MatchKeys attempts to match multiple RaiderIO keys to WarcraftLogs runs for a character.
