@@ -53,7 +53,7 @@ func TestFetchWeeklyRuns(t *testing.T) {
 	if runs[0].Dungeon != "Mists of Tirna Scithe" {
 		t.Fatalf("expected dungeon to map, got %s", runs[0].Dungeon)
 	}
-	if runs[0].Character != "Arthas" {
+	if runs[0].Character != "arthas" {
 		t.Fatalf("expected character to map, got %s", runs[0].Character)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
 	"github.com/tnicklin/celestial_orrey/store/db"
+	"go.uber.org/atomic"
 )
 
 var _ Store = (*SQLiteStore)(nil)
@@ -39,10 +40,9 @@ type SQLiteStore struct {
 	flushDebounce time.Duration
 	flushTimer    *time.Timer
 	flushMu       sync.Mutex
-	dirty         bool
+	dirty         atomic.Bool
 	ctx           context.Context
 	cancel        context.CancelFunc
-	wg            sync.WaitGroup
 }
 
 type Params struct {
@@ -62,19 +62,10 @@ func NewSQLiteStore(p Params) *SQLiteStore {
 
 func (s *SQLiteStore) log() logger.Logger {
 	if s.logger == nil {
-		return nopLogger{}
+		return logger.NewNop()
 	}
 	return s.logger
 }
-
-// nopLogger is a no-op logger for when no logger is configured.
-type nopLogger struct{}
-
-func (nopLogger) DebugW(_ string, _ ...any) {}
-func (nopLogger) InfoW(_ string, _ ...any)  {}
-func (nopLogger) WarnW(_ string, _ ...any)  {}
-func (nopLogger) ErrorW(_ string, _ ...any) {}
-func (nopLogger) Sync() error               { return nil }
 
 // SetFlushDebounce sets the debounce duration for disk flushes.
 // Must be called before Open().
@@ -138,7 +129,7 @@ func (s *SQLiteStore) Shutdown(ctx context.Context) error {
 	s.flushMu.Unlock()
 
 	// Perform final flush if dirty
-	if s.dirty && s.snapshotPath != "" {
+	if s.dirty.Load() && s.snapshotPath != "" {
 		if err := s.FlushToDisk(ctx, s.snapshotPath); err != nil {
 			// Log error but continue with close
 			fmt.Fprintf(os.Stderr, "shutdown flush failed: %v\n", err)
@@ -221,7 +212,7 @@ func (s *SQLiteStore) scheduleFlush() {
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
 
-	s.dirty = true
+	s.dirty.Store(true)
 	if s.flushTimer != nil {
 		s.flushTimer.Stop()
 	}
@@ -232,12 +223,9 @@ func (s *SQLiteStore) scheduleFlush() {
 }
 
 func (s *SQLiteStore) performScheduledFlush() {
-	s.flushMu.Lock()
-	if !s.dirty {
-		s.flushMu.Unlock()
+	if !s.dirty.Load() {
 		return
 	}
-	s.flushMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
@@ -247,9 +235,7 @@ func (s *SQLiteStore) performScheduledFlush() {
 		return
 	}
 
-	s.flushMu.Lock()
-	s.dirty = false
-	s.flushMu.Unlock()
+	s.dirty.Store(false)
 }
 
 func (s *SQLiteStore) stopFlushTimer() {

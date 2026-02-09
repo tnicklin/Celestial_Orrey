@@ -15,7 +15,7 @@ import (
 	"github.com/tnicklin/celestial_orrey/discord"
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/raiderio"
-	raiderioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
+	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/warcraftlogs"
 	"go.uber.org/config"
@@ -44,7 +44,7 @@ type result struct {
 	Config        appConfig
 	Logger        logger.Logger
 	Store         *store.SQLiteStore
-	RaiderIO      raiderioClient.Client
+	RaiderIO      rioClient.Client
 	RIOPoller     raiderio.Poller
 	WarcraftLogs  warcraftlogs.WCL
 	WCLPoller     warcraftlogs.Poller
@@ -79,7 +79,7 @@ func build() (result, error) {
 		Client: wclClient,
 	})
 
-	rioClient := raiderioClient.New(raiderioClient.Params{
+	rio := rioClient.New(rioClient.Params{
 		BaseURL:    cfg.RaiderIO.BaseURL,
 		UserAgent:  cfg.RaiderIO.UserAgent,
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
@@ -87,7 +87,7 @@ func build() (result, error) {
 
 	rioPoller := raiderio.New(raiderio.Params{
 		Config:    cfg.RaiderIO,
-		Client:    rioClient,
+		Client:    rio,
 		Store:     st,
 		WCLLinker: wclLinker,
 	})
@@ -101,7 +101,7 @@ func build() (result, error) {
 	discordClient, err := discord.New(discord.Params{
 		Config:       cfg.Discord,
 		Store:        st,
-		RaiderIO:     rioClient,
+		RaiderIO:     rio,
 		WarcraftLogs: wclClient,
 		Logger:       appLogger,
 	})
@@ -114,7 +114,7 @@ func build() (result, error) {
 		Logger:        appLogger,
 		DiscordClient: discordClient,
 		Store:         st,
-		RaiderIO:      rioClient,
+		RaiderIO:      rio,
 		RIOPoller:     rioPoller,
 		WarcraftLogs:  wclClient,
 		WCLPoller:     wclPoller,

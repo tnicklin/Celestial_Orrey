@@ -116,26 +116,28 @@ func (p *DefaultPoller) pollAllCharacters(ctx context.Context) {
 	}
 
 	sem := make(chan struct{}, p.maxConcurrent)
+	var wg sync.WaitGroup
 
 	for _, char := range characters {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return
 		case <-p.stop:
+			wg.Wait()
 			return
 		case sem <- struct{}{}:
 		}
 
+		wg.Add(1)
 		go func(c models.Character) {
+			defer wg.Done()
 			defer func() { <-sem }()
 			p.pollCharacter(ctx, c)
 		}(char)
 	}
 
-	// Wait for all goroutines to finish
-	for i := 0; i < p.maxConcurrent; i++ {
-		sem <- struct{}{}
-	}
+	wg.Wait()
 }
 
 func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Character) {

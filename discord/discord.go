@@ -475,6 +475,10 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 			}
 		}
 
+		if len(charKeys) == 0 {
+			continue
+		}
+
 		hasKeys = true
 		sortKeysByLevel(charKeys)
 		c.writeReportLineAligned(&sb, char.Name, maxNameLen, len(charKeys), charKeys)
@@ -512,13 +516,9 @@ func (c *DefaultDiscord) writeReportLineAligned(sb *strings.Builder, name string
 
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
 func sortKeysByLevel(keys []models.CompletedKey) {
-	for i := 0; i < len(keys)-1; i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if keys[j].KeyLevel > keys[i].KeyLevel {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
-		}
-	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].KeyLevel > keys[j].KeyLevel
+	})
 }
 
 // getVaultSlotColored returns the colored vault slot display for ANSI code blocks

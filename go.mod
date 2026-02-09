@@ -11,6 +11,7 @@ require (
 
 require (
 	github.com/gorilla/websocket v1.4.2 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/crypto v0.0.0-20210421170649-83a5a9bb288b // indirect
 	golang.org/x/lint v0.0.0-20190930215403-16217165b5de // indirect

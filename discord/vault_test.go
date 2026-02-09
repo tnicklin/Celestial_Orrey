@@ -100,7 +100,7 @@ func TestVaultRewardTable_GetThreshold(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			threshold := VaultRewards.GetThreshold(tt.keyLevel)
+			threshold := VaultRewardsSeason1.GetThreshold(tt.keyLevel)
 			if threshold.ItemLevel != tt.wantILvl {
 				t.Errorf("GetThreshold(%d).ItemLevel = %d, want %d", tt.keyLevel, threshold.ItemLevel, tt.wantILvl)
 			}
@@ -144,7 +144,7 @@ func TestVaultRewardTable_GetItemLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := VaultRewards.GetItemLevel(tt.keyLevel)
+			got := VaultRewardsSeason1.GetItemLevel(tt.keyLevel)
 			if got != tt.wantILvl {
 				t.Errorf("GetItemLevel(%d) = %d, want %d", tt.keyLevel, got, tt.wantILvl)
 			}
