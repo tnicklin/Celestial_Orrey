@@ -11,17 +11,11 @@ raiderio:
   base_url: https://raider.io
   user_agent: celestial-orrey/1.0
   poll_interval: 1m
-  max_concurrent: 4
+  max_concurrent: 10
 
 store:
   path: data/celestial_orrey.db
   backup_dir: data/backup
-
-warcraftlogs:
-  guild_name: ""
-  server_slug: ""
-  server_region: ""
-  limit: 50
 
 characters:
   - name: Askr
