@@ -537,9 +537,7 @@ func (c *DefaultDiscord) cmdHelp() string {
 !char sync <name> <realm>  - Sync character from RaiderIO
 !char purge <name> <realm> - Remove character from database
 !help                      - Show this help message
-` + "```" + `
-*Use realm slugs (e.g., area-52, burning-legion). Region defaults to US.*
-*For ambiguous names, use name-realm format (e.g., askr-mal-ganis)*`
+` + "```"
 }
 
 // cmdChar handles character management commands.
