@@ -79,14 +79,6 @@ func (p *DefaultPoller) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the polling loop.
-func (p *DefaultPoller) Stop() {
-	if p.stop != nil {
-		close(p.stop)
-		<-p.done
-	}
-}
-
 func (p *DefaultPoller) run(ctx context.Context) {
 	defer close(p.done)
 
@@ -108,8 +100,15 @@ func (p *DefaultPoller) run(ctx context.Context) {
 	}
 }
 
+// Stop stops the polling loop.
+func (p *DefaultPoller) Stop() {
+	if p.stop != nil {
+		close(p.stop)
+		<-p.done
+	}
+}
+
 func (p *DefaultPoller) pollAllCharacters(ctx context.Context) {
-	// Fetch current characters from the store
 	characters, err := p.store.ListCharacters(ctx)
 	if err != nil || len(characters) == 0 {
 		return
@@ -143,14 +142,12 @@ func (p *DefaultPoller) pollAllCharacters(ctx context.Context) {
 func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Character) {
 	charKey := character.Key()
 
-	// Load known keys for this character if not already loaded
 	p.mu.Lock()
 	known, ok := p.known[charKey]
 	if !ok {
 		known = make(map[string]struct{})
 		p.known[charKey] = known
 
-		// Load existing keys from store
 		cutoff := timeutil.WeeklyReset()
 		existingKeys, err := p.store.ListKeysByCharacterSince(ctx, character.Name, cutoff)
 		if err == nil {
@@ -161,14 +158,12 @@ func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Char
 	}
 	p.mu.Unlock()
 
-	// Fetch keys from RaiderIO
 	keys, err := p.client.FetchWeeklyRuns(ctx, character)
 	if err != nil {
 		return
 	}
 
 	cutoff := timeutil.WeeklyReset()
-
 	for _, key := range keys {
 		if !afterCutoff(key.CompletedAt, cutoff) {
 			continue
@@ -191,7 +186,6 @@ func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Char
 			continue
 		}
 
-		// Attempt WCL linking for new key
 		p.linkToWCL(ctx, key)
 	}
 }

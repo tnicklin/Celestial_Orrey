@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const reportsQuery = `
+const _reportsQuery = `
 query Reports($startTime: Float!, $endTime: Float!, $guildName: String, $guildServerSlug: String, $guildServerRegion: String, $limit: Int) {
   reportData {
     reports(startTime: $startTime, endTime: $endTime, guildName: $guildName, guildServerSlug: $guildServerSlug, guildServerRegion: $guildServerRegion, limit: $limit) {
@@ -46,7 +46,7 @@ func (c *DefaultWCL) FetchReports(ctx context.Context, filter ReportFilter) ([]R
 		vars["limit"] = filter.Limit
 	}
 
-	raw, err := c.Query(ctx, reportsQuery, vars)
+	raw, err := c.Query(ctx, _reportsQuery, vars)
 	if err != nil {
 		return nil, err
 	}

@@ -10,6 +10,57 @@ import (
 	"github.com/tnicklin/celestial_orrey/timeutil"
 )
 
+func TestPollerFiltersKeys(t *testing.T) {
+	cutoff := timeutil.WeeklyReset()
+	after := cutoff.Add(24 * time.Hour).Format(time.RFC3339)
+	before := cutoff.Add(-24 * time.Hour).Format(time.RFC3339)
+
+	client := &fakeClient{runs: []models.CompletedKey{
+		{
+			KeyID:       1,
+			Character:   "Arthas",
+			Region:      "us",
+			Realm:       "illidan",
+			Dungeon:     "Mists",
+			KeyLevel:    10,
+			RunTimeMS:   100,
+			ParTimeMS:   120,
+			CompletedAt: after,
+			Source:      "raiderio",
+		},
+		{
+			KeyID:       2,
+			Character:   "Arthas",
+			Region:      "us",
+			Realm:       "illidan",
+			Dungeon:     "Mists",
+			KeyLevel:    9,
+			RunTimeMS:   100,
+			ParTimeMS:   120,
+			CompletedAt: before,
+			Source:      "raiderio",
+		},
+	}}
+
+	st := &fakeStore{
+		characters: []models.Character{{Region: "us", Realm: "illidan", Name: "Arthas"}},
+	}
+
+	poller := New(Params{
+		Client: client,
+		Store:  st,
+	})
+
+	poller.pollCharacter(context.Background(), models.Character{Region: "us", Realm: "illidan", Name: "Arthas"})
+
+	if len(st.seen) != 1 {
+		t.Fatalf("expected 1 stored key (after cutoff), got %d", len(st.seen))
+	}
+	if st.seen[0].KeyID != 1 {
+		t.Fatalf("expected key ID 1, got %d", st.seen[0].KeyID)
+	}
+}
+
 type fakeClient struct {
 	runs []models.CompletedKey
 }
@@ -60,55 +111,4 @@ func (f *fakeStore) DeleteCharacter(ctx context.Context, name, realm, region str
 }
 func (f *fakeStore) ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error) {
 	return nil, nil
-}
-
-func TestPollerFiltersKeys(t *testing.T) {
-	cutoff := timeutil.WeeklyReset()
-	after := cutoff.Add(24 * time.Hour).Format(time.RFC3339)
-	before := cutoff.Add(-24 * time.Hour).Format(time.RFC3339)
-
-	client := &fakeClient{runs: []models.CompletedKey{
-		{
-			KeyID:       1,
-			Character:   "Arthas",
-			Region:      "us",
-			Realm:       "illidan",
-			Dungeon:     "Mists",
-			KeyLevel:    10,
-			RunTimeMS:   100,
-			ParTimeMS:   120,
-			CompletedAt: after,
-			Source:      "raiderio",
-		},
-		{
-			KeyID:       2,
-			Character:   "Arthas",
-			Region:      "us",
-			Realm:       "illidan",
-			Dungeon:     "Mists",
-			KeyLevel:    9,
-			RunTimeMS:   100,
-			ParTimeMS:   120,
-			CompletedAt: before,
-			Source:      "raiderio",
-		},
-	}}
-	st := &fakeStore{
-		characters: []models.Character{{Region: "us", Realm: "illidan", Name: "Arthas"}},
-	}
-
-	poller := New(Params{
-		Client: client,
-		Store:  st,
-	})
-
-	// Manually call pollCharacter to test filtering
-	poller.pollCharacter(context.Background(), models.Character{Region: "us", Realm: "illidan", Name: "Arthas"})
-
-	if len(st.seen) != 1 {
-		t.Fatalf("expected 1 stored key (after cutoff), got %d", len(st.seen))
-	}
-	if st.seen[0].KeyID != 1 {
-		t.Fatalf("expected key ID 1, got %d", st.seen[0].KeyID)
-	}
 }

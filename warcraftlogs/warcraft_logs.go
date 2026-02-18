@@ -19,10 +19,11 @@ import (
 var _ WCL = (*DefaultWCL)(nil)
 
 const (
-	defaultGraphQLURL = "https://www.warcraftlogs.com/api/v2/client"
-	defaultTokenURL   = "https://www.warcraftlogs.com/oauth/token"
+	_defaultGraphQLURL = "https://www.warcraftlogs.com/api/v2/client"
+	_defaultTokenURL   = "https://www.warcraftlogs.com/oauth/token"
 )
 
+// DefaultWCL is the default implementation of the WCL interface.
 type DefaultWCL struct {
 	graphQLURL string
 	tokenURL   string
@@ -36,6 +37,7 @@ type DefaultWCL struct {
 	tokenExpiry time.Time
 }
 
+// Params holds configuration for creating a new DefaultWCL.
 type Params struct {
 	ClientID     string
 	ClientSecret string
@@ -45,14 +47,15 @@ type Params struct {
 	HTTPClient   *http.Client
 }
 
+// New creates a new DefaultWCL with the given parameters.
 func New(p Params) *DefaultWCL {
 	graphQLURL := p.GraphQLURL
 	if graphQLURL == "" {
-		graphQLURL = defaultGraphQLURL
+		graphQLURL = _defaultGraphQLURL
 	}
 	tokenURL := p.TokenURL
 	if tokenURL == "" {
-		tokenURL = defaultTokenURL
+		tokenURL = _defaultTokenURL
 	}
 	httpClient := p.HTTPClient
 	if httpClient == nil {
@@ -69,6 +72,7 @@ func New(p Params) *DefaultWCL {
 	}
 }
 
+// Query executes a GraphQL query against the WCL API and returns the raw JSON response.
 func (c *DefaultWCL) Query(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
 	if query == "" {
 		return nil, errors.New("warcraftlogs: query is empty")
@@ -179,19 +183,7 @@ func (c *DefaultWCL) getToken(ctx context.Context) (string, error) {
 	return c.token, nil
 }
 
-// FetchCharacterMythicPlus fetches recent M+ runs for a character.
-func (c *DefaultWCL) FetchCharacterMythicPlus(ctx context.Context, char models.Character, limit int) ([]MythicPlusRun, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-
-	// Convert realm to server slug (lowercase, remove apostrophes/hyphens/spaces)
-	serverSlug := strings.ToLower(char.Realm)
-	serverSlug = strings.ReplaceAll(serverSlug, "'", "")
-	serverSlug = strings.ReplaceAll(serverSlug, "-", "")
-	serverSlug = strings.ReplaceAll(serverSlug, " ", "")
-
-	query := `
+const _mythicPlusQuery = `
 	query($name: String!, $serverSlug: String!, $serverRegion: String!, $limit: Int!) {
 		characterData {
 			character(name: $name, serverSlug: $serverSlug, serverRegion: $serverRegion) {
@@ -221,6 +213,45 @@ func (c *DefaultWCL) FetchCharacterMythicPlus(ctx context.Context, char models.C
 	}
 	`
 
+type wclResult struct {
+	CharacterData struct {
+		Character *struct {
+			ID            int    `json:"id"`
+			Name          string `json:"name"`
+			RecentReports struct {
+				Data []struct {
+					Code      string `json:"code"`
+					Title     string `json:"title"`
+					StartTime int64  `json:"startTime"`
+					Fights    []struct {
+						ID            int      `json:"id"`
+						Name          string   `json:"name"`
+						EncounterID   int      `json:"encounterID"`
+						Difficulty    *int     `json:"difficulty"`
+						KeystoneLevel *int     `json:"keystoneLevel"`
+						KeystoneTime  *int64   `json:"keystoneTime"`
+						KeystoneBonus *int     `json:"keystoneBonus"`
+						Rating        *float64 `json:"rating"`
+						EndTime       int64    `json:"endTime"`
+						Kill          *bool    `json:"kill"`
+					} `json:"fights"`
+				} `json:"data"`
+			} `json:"recentReports"`
+		} `json:"character"`
+	} `json:"characterData"`
+}
+
+// FetchCharacterMythicPlus fetches recent M+ runs for a character.
+func (c *DefaultWCL) FetchCharacterMythicPlus(ctx context.Context, char models.Character, limit int) ([]MythicPlusRun, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	serverSlug := strings.ToLower(char.Realm)
+	serverSlug = strings.ReplaceAll(serverSlug, "'", "")
+	serverSlug = strings.ReplaceAll(serverSlug, "-", "")
+	serverSlug = strings.ReplaceAll(serverSlug, " ", "")
+
 	variables := map[string]any{
 		"name":         char.Name,
 		"serverSlug":   serverSlug,
@@ -228,39 +259,12 @@ func (c *DefaultWCL) FetchCharacterMythicPlus(ctx context.Context, char models.C
 		"limit":        limit,
 	}
 
-	data, err := c.Query(ctx, query, variables)
+	data, err := c.Query(ctx, _mythicPlusQuery, variables)
 	if err != nil {
 		return nil, err
 	}
 
-	var result struct {
-		CharacterData struct {
-			Character *struct {
-				ID            int    `json:"id"`
-				Name          string `json:"name"`
-				RecentReports struct {
-					Data []struct {
-						Code      string `json:"code"`
-						Title     string `json:"title"`
-						StartTime int64  `json:"startTime"`
-						Fights    []struct {
-							ID            int      `json:"id"`
-							Name          string   `json:"name"`
-							EncounterID   int      `json:"encounterID"`
-							Difficulty    *int     `json:"difficulty"`
-							KeystoneLevel *int     `json:"keystoneLevel"`
-							KeystoneTime  *int64   `json:"keystoneTime"`
-							KeystoneBonus *int     `json:"keystoneBonus"`
-							Rating        *float64 `json:"rating"`
-							EndTime       int64    `json:"endTime"`
-							Kill          *bool    `json:"kill"`
-						} `json:"fights"`
-					} `json:"data"`
-				} `json:"recentReports"`
-			} `json:"character"`
-		} `json:"characterData"`
-	}
-
+	var result wclResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("warcraftlogs: failed to parse response: %w", err)
 	}
@@ -274,7 +278,6 @@ func (c *DefaultWCL) FetchCharacterMythicPlus(ctx context.Context, char models.C
 		reportStartTime := time.UnixMilli(report.StartTime)
 
 		for _, fight := range report.Fights {
-			// Skip non-M+ fights (keystoneLevel is nil for non-M+)
 			if fight.KeystoneLevel == nil || *fight.KeystoneLevel == 0 {
 				continue
 			}

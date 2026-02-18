@@ -4,8 +4,8 @@ logger:
     - stdout
 
 discord:
-  guild_id: "1470164460000907482"
-  listen_channel: "1470164461619777718"
+  guild_id: "836026401823260733"
+  listen_channel: "1326784974602637413"
 
 raiderio:
   base_url: https://raider.io

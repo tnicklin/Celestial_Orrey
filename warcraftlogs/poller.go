@@ -82,12 +82,10 @@ func (p *DefaultPoller) Stop() {
 func (p *DefaultPoller) run(ctx context.Context) {
 	defer close(p.done)
 
-	// Run immediately on start
-	p.pollOnce(ctx)
-
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
+	p.pollOnce(ctx)
 	for {
 		select {
 		case <-p.stop:

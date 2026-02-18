@@ -12,6 +12,10 @@ import (
 	"github.com/tnicklin/celestial_orrey/models"
 )
 
+const (
+	_sourceRaiderIO = "raiderio"
+)
+
 var _ Client = (*DefaultClient)(nil)
 
 // DefaultClient is the RaiderIO API client.
@@ -21,6 +25,7 @@ type DefaultClient struct {
 	http      *http.Client
 }
 
+// Params holds configuration for creating a new RaiderIO client.
 type Params struct {
 	BaseURL    string
 	UserAgent  string
@@ -36,6 +41,7 @@ func New(p Params) *DefaultClient {
 	}
 }
 
+// FetchWeeklyRuns fetches the weekly M+ runs for a character from RaiderIO.
 func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Character) ([]models.CompletedKey, error) {
 	endpoint, err := url.Parse(c.baseURL)
 	if err != nil {
@@ -87,7 +93,7 @@ func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Ch
 			RunTimeMS:   run.ClearTimeMS,
 			ParTimeMS:   run.ParTimeMS,
 			CompletedAt: run.CompletedAt,
-			Source:      "raiderio",
+			Source:      _sourceRaiderIO,
 		}
 		out = append(out, key)
 	}

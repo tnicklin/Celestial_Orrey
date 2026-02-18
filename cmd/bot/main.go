@@ -3,13 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/tnicklin/celestial_orrey/discord"
@@ -19,18 +16,17 @@ import (
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/warcraftlogs"
 	"go.uber.org/config"
+	"go.uber.org/fx"
 )
 
-func main() {
-	result, err := build()
-	if err != nil {
-		log.Fatal(err)
-	}
+const _configDir = "config"
 
-	if err = run(result); err != nil {
-		log.Fatal(err)
-	}
-}
+func main() { fx.New(_app).Run() }
+
+var _app = fx.Options(
+	fx.Provide(build),
+	fx.Invoke(run),
+)
 
 type appConfig struct {
 	Logger       logger.Config       `yaml:"logger"`
@@ -41,6 +37,8 @@ type appConfig struct {
 }
 
 type result struct {
+	fx.Out
+
 	Config        appConfig
 	Logger        logger.Logger
 	Store         *store.SQLiteStore
@@ -52,7 +50,7 @@ type result struct {
 }
 
 func build() (result, error) {
-	cfg, err := loadConfig("config")
+	cfg, err := loadConfig()
 	if err != nil {
 		return result{}, fmt.Errorf("load config: %w", err)
 	}
@@ -121,51 +119,84 @@ func build() (result, error) {
 	}, nil
 }
 
-// run starts all components and runs the application until shutdown.
-func run(r result) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	defer r.Logger.Sync()
+type runParams struct {
+	fx.In
 
-	if err := r.Store.Open(ctx); err != nil {
-		return fmt.Errorf("open keydb store: %w", err)
-	}
+	Lifecycle     fx.Lifecycle
+	Config        appConfig
+	Store         *store.SQLiteStore
+	RaiderIO      rioClient.Client
+	RIOPoller     raiderio.Poller
+	WarcraftLogs  warcraftlogs.WCL
+	WCLPoller     warcraftlogs.Poller
+	DiscordClient discord.Discord
+	Logger        logger.Logger
+}
 
-	if err := r.Store.RestoreFromDisk(ctx, r.Config.Store.Path); err != nil {
-		r.Logger.WarnW("restore from disk", "error", err)
-	}
+func run(p runParams) error {
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			ctx := context.Background()
+			if err := p.Store.Open(ctx); err != nil {
+				return fmt.Errorf("open keydb store: %w", err)
+			}
+			if err := p.Store.RestoreFromDisk(ctx, p.Config.Store.Path); err != nil {
+				p.Logger.WarnW("restore from disk", "error", err)
+			}
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			return p.Store.Shutdown(ctx)
+		},
+	})
 
-	if err := r.DiscordClient.Start(ctx); err != nil {
-		return fmt.Errorf("start discord client: %w", err)
-	}
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			if err := p.DiscordClient.Start(context.Background()); err != nil {
+				return fmt.Errorf("start discord client: %w", err)
+			}
 
-	if err := r.RIOPoller.Start(ctx); err != nil {
-		return fmt.Errorf("start rio poller: %w", err)
-	}
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.DiscordClient.Stop()
+			return nil
+		},
+	})
 
-	if err := r.WCLPoller.Start(ctx); err != nil {
-		return fmt.Errorf("start wcl poller: %w", err)
-	}
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			if err := p.WCLPoller.Start(context.Background()); err != nil {
+				return fmt.Errorf("start wcl poller: %w", err)
+			}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	r.WCLPoller.Stop()
-	r.DiscordClient.Stop()
-	cancel()
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.WCLPoller.Stop()
+			return nil
+		},
+	})
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			if err := p.RIOPoller.Start(context.Background()); err != nil {
+				return fmt.Errorf("start rio poller: %w", err)
+			}
 
-	if err := r.Store.Shutdown(shutdownCtx); err != nil {
-		return err
-	}
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.RIOPoller.Stop()
+			return nil
+		},
+	})
 
 	return nil
 }
 
-func loadConfig(dir string) (appConfig, error) {
-	files, err := os.ReadDir(dir)
+func loadConfig() (appConfig, error) {
+	files, err := os.ReadDir(_configDir)
 	if err != nil {
 		return appConfig{}, fmt.Errorf("read config dir: %w", err)
 	}
@@ -178,11 +209,11 @@ func loadConfig(dir string) (appConfig, error) {
 		if !strings.HasSuffix(f.Name(), ".yaml") {
 			continue
 		}
-		path := filepath.Join(dir, f.Name())
+		path := filepath.Join(_configDir, f.Name())
 		opts = append(opts, config.File(path))
 	}
 	if len(opts) == 0 {
-		return appConfig{}, fmt.Errorf("no yaml files found in %q", dir)
+		return appConfig{}, fmt.Errorf("no yaml files found in %q", _configDir)
 	}
 
 	provider, err := config.NewYAML(opts...)

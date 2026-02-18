@@ -15,14 +15,14 @@ import (
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
 	"github.com/tnicklin/celestial_orrey/warcraftlogs"
+	"go.uber.org/zap"
 )
-
-var _ Discord = (*DefaultDiscord)(nil)
 
 const commandPrefix = "!"
 
-// pstLocation is the timezone for formatting times.
-var pstLocation = timeutil.Location()
+var _pstLocation = timeutil.Location()
+
+var _ Discord = (*DefaultDiscord)(nil)
 
 type DefaultDiscord struct {
 	session       *discordgo.Session
@@ -53,11 +53,6 @@ func New(p Params) (*DefaultDiscord, error) {
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 
-	log := p.Logger
-	if log == nil {
-		log = logger.NewNop()
-	}
-
 	return &DefaultDiscord{
 		session:       session,
 		guildID:       cfg.GuildID,
@@ -65,7 +60,7 @@ func New(p Params) (*DefaultDiscord, error) {
 		store:         p.Store,
 		raiderIO:      p.RaiderIO,
 		warcraftLogs:  p.WarcraftLogs,
-		logger:        log,
+		logger:        p.Logger,
 	}, nil
 }
 
@@ -102,17 +97,15 @@ func (c *DefaultDiscord) runScheduler() {
 	defer ticker.Stop()
 
 	var lastPost time.Time
-
 	for {
 		select {
 		case <-c.stopScheduler:
 			return
 		case now := <-ticker.C:
-			pstNow := now.In(pstLocation)
+			pstNow := now.In(_pstLocation)
 
-			// 7am PST daily post
 			if pstNow.Hour() == 7 && pstNow.Minute() == 0 {
-				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 7, 0, 0, 0, pstLocation)
+				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 7, 0, 0, 0, _pstLocation)
 				if !today.Equal(lastPost) {
 					lastPost = today
 					c.postDailyAnnouncement(pstNow)
@@ -125,46 +118,60 @@ func (c *DefaultDiscord) runScheduler() {
 func (c *DefaultDiscord) postDailyAnnouncement(now time.Time) {
 	ctx := context.Background()
 
-	// Tuesday = reset day
 	if now.Weekday() == time.Tuesday {
-		// Archive last week's data before reset
 		if err := c.store.ArchiveWeek(ctx); err != nil {
-			c.logger.ErrorW("failed to archive week", "error", err)
+			c.logger.ErrorW("archive week", "error", err)
 		}
 
-		// Post reset message
 		msg := "**Dawn of the 1st Day**"
 		if err := c.WriteMessage(c.listenChannel, msg); err != nil {
-			c.logger.ErrorW("failed to post reset message", "error", err)
+			c.logger.ErrorW("post reset message", "error", err)
 		}
 		return
 	}
 
-	// Other days: post the weekly progress report
 	resetTime := timeutil.WeeklyReset()
 	report, err := c.formatAllCharactersReport(ctx, resetTime)
 	if err != nil {
-		c.logger.ErrorW("failed to generate report", "error", err)
+		c.logger.ErrorW("generate report", "error", err)
 		return
 	}
 
 	if err := c.WriteMessage(c.listenChannel, report); err != nil {
-		c.logger.ErrorW("failed to post daily report", "error", err)
+		c.logger.ErrorW("post daily report", "error", err)
 	}
 }
+
+const (
+	_cmdKeys   = "keys"
+	_cmdReport = "report"
+	_cmdChar   = "char"
+	_cmdHelp   = "help"
+)
+
+const (
+	_askr  = "askr_"
+	_xtein = "xtein"
+)
 
 func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.Bot {
 		return
 	}
 
-	// Only respond in the configured listen channel
 	if c.listenChannel != "" && m.ChannelID != c.listenChannel {
 		return
 	}
 
 	if !strings.HasPrefix(m.Content, commandPrefix) {
 		return
+	}
+
+	if m.Author.Username == _xtein {
+		err := s.MessageReactionAdd(m.ChannelID, m.ID, "✅")
+		if err != nil {
+			c.logger.ErrorW("react", zap.Error(err))
+		}
 	}
 
 	content := strings.TrimPrefix(m.Content, commandPrefix)
@@ -176,24 +183,24 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
 
+	var (
+		response string
+		err      error
+	)
+
 	ctx := context.Background()
-
-	var response string
-	var err error
-
 	switch cmd {
-	case "keys":
+	case _cmdKeys:
 		response, err = c.cmdKeys(ctx, args)
-	case "report":
+	case _cmdReport:
 		response, err = c.cmdReport(ctx, args)
-	case "help":
-		response = c.cmdHelp()
-	case "char":
+	case _cmdChar:
 		response, err = c.cmdChar(ctx, args)
+	case _cmdHelp:
+		response = c.cmdHelp()
 	default:
 		return
 	}
-
 	if err != nil {
 		c.logger.ErrorW("command failed", "command", cmd, "error", err)
 		response = fmt.Sprintf("Error: %v", err)
@@ -219,12 +226,10 @@ func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (string, er
 		return "Usage: `!keys <character_name>` or `!keys all`\nExample: `!keys askrm` or `!keys all`", nil
 	}
 
-	// "all" shows all characters
 	if strings.ToLower(args[0]) == "all" {
 		return c.formatAllCharacterKeys(ctx, resetTime)
 	}
 
-	// Query for specific character name
 	return c.formatCharacterKeys(ctx, args[0], resetTime)
 }
 
@@ -234,11 +239,9 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 		return "", err
 	}
 
-	// Check if query is in "name-realm" format
 	var matchingChars []models.Character
 	queryLower := strings.ToLower(query)
 
-	// Try exact "name-realm" match first
 	for _, char := range allChars {
 		charKey := strings.ToLower(char.Name + "-" + char.Realm)
 		if charKey == queryLower {
@@ -246,7 +249,6 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 		}
 	}
 
-	// If no exact match, try name-only match
 	if len(matchingChars) == 0 {
 		for _, char := range allChars {
 			if strings.ToLower(char.Name) == queryLower {
@@ -259,7 +261,6 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 		return fmt.Sprintf("No character found matching **%s**.", query), nil
 	}
 
-	// Check for ambiguous character name (same name on different servers)
 	if len(matchingChars) > 1 {
 		var realms []string
 		for _, char := range matchingChars {
@@ -274,7 +275,6 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 		return "", err
 	}
 
-	// Filter to only this realm
 	var charKeys []models.CompletedKey
 	for _, key := range keys {
 		if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
@@ -318,7 +318,6 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 			continue
 		}
 
-		// Filter to only this realm
 		var charKeys []models.CompletedKey
 		for _, key := range keys {
 			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
@@ -342,7 +341,6 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 }
 
 func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.Builder, char models.Character, keys []models.CompletedKey) {
-	// Header with character name, realm, and count
 	keyWord := "keys"
 	if len(keys) == 1 {
 		keyWord = "key"
@@ -354,7 +352,6 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 		dungeonShort := shortenDungeonName(key.Dungeon)
 		timing := formatTimingDiff(key.RunTimeMS, key.ParTimeMS)
 
-		// Get WCL link if available
 		wclLink := ""
 		links, err := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
 		if err == nil && len(links) > 0 {
@@ -369,10 +366,6 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 // cmdReport handles the !report command for weekly vault progress.
 // Usage: !report [character_name]
 func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (string, error) {
-	if c.store == nil {
-		return "", errors.New("database not configured")
-	}
-
 	resetTime := timeutil.WeeklyReset()
 
 	if len(args) > 0 {
@@ -400,7 +393,6 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return fmt.Sprintf("No character found with name **%s**.", name), nil
 	}
 
-	// Sort by realm for deterministic output
 	sort.Slice(matchingChars, func(i, j int) bool {
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
@@ -412,6 +404,7 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 	for _, char := range matchingChars {
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 		if err != nil {
+			c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
 			continue
 		}
 
@@ -437,7 +430,6 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		return "", err
 	}
 
-	// Sort characters by name for deterministic output
 	sort.Slice(allChars, func(i, j int) bool {
 		return allChars[i].Name < allChars[j].Name
 	})
@@ -450,7 +442,6 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 	sb.WriteString(fmt.Sprintf("**Great Vault Progress** (Week of %s)\n", since.Format("Jan 2")))
 	sb.WriteString("```ansi\n")
 
-	// Find max name length for alignment
 	maxNameLen := 0
 	for _, char := range allChars {
 		if len(char.Name) > maxNameLen {
@@ -462,6 +453,7 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 	for _, char := range allChars {
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 		if err != nil {
+			c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
 			continue
 		}
 
@@ -504,11 +496,14 @@ func (c *DefaultDiscord) writeReportLineAligned(sb *strings.Builder, name string
 	vault2 := getVaultSlotColored(keys, 3)
 	vault3 := getVaultSlotColored(keys, 7)
 
-	// Pad name for alignment
 	paddedName := name + strings.Repeat(" ", maxNameLen-len(name))
+	paddedKeys := fmt.Sprintf("%d", keyCount)
+	if keyCount < 10 {
+		paddedKeys = " " + paddedKeys
+	}
 
-	sb.WriteString(fmt.Sprintf("%s: %d keys %s %s %s\n",
-		paddedName, keyCount, vault1, vault2, vault3))
+	sb.WriteString(fmt.Sprintf("%s: %s keys %s %s %s\n",
+		paddedName, paddedKeys, vault1, vault2, vault3))
 }
 
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
@@ -540,6 +535,11 @@ func (c *DefaultDiscord) cmdHelp() string {
 ` + "```"
 }
 
+const (
+	_cmdSync  = "sync"
+	_cmdPurge = "purge"
+)
+
 // cmdChar handles character management commands.
 func (c *DefaultDiscord) cmdChar(ctx context.Context, args []string) (string, error) {
 	if len(args) < 1 {
@@ -550,9 +550,9 @@ func (c *DefaultDiscord) cmdChar(ctx context.Context, args []string) (string, er
 	subArgs := args[1:]
 
 	switch subCmd {
-	case "sync":
+	case _cmdSync:
 		return c.cmdCharSync(ctx, subArgs)
-	case "purge":
+	case _cmdPurge:
 		return c.cmdCharPurge(ctx, subArgs)
 	default:
 		return "Unknown subcommand. Use `sync` or `purge`.", nil
@@ -578,13 +578,11 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		Region: "us",
 	}
 
-	// Fetch keys from RaiderIO
 	keys, err := c.raiderIO.FetchWeeklyRuns(ctx, char)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch from RaiderIO: %w", err)
+		return "", fmt.Errorf("fetch from RaiderIO: %w", err)
 	}
 
-	// Upsert keys into database
 	insertedCount := 0
 	for _, key := range keys {
 		if err := c.store.UpsertCompletedKey(ctx, key); err == nil {
@@ -592,7 +590,6 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		}
 	}
 
-	// Link WarcraftLogs if available
 	linkedCount := 0
 	if c.warcraftLogs != nil {
 		linker := warcraftlogs.NewLinker(warcraftlogs.LinkerParams{
@@ -645,13 +642,11 @@ func (c *DefaultDiscord) cmdCharPurge(ctx context.Context, args []string) (strin
 	realm := strings.ToLower(args[1])
 	region := "us"
 
-	// Verify character exists
 	_, err := c.store.GetCharacter(ctx, name, realm, region)
 	if err != nil {
 		return fmt.Sprintf("Character **%s** (%s-%s) not found in database.", name, realm, region), nil
 	}
 
-	// Delete character and all associated data
 	if err := c.store.DeleteCharacter(ctx, name, realm, region); err != nil {
 		return "", fmt.Errorf("failed to delete character: %w", err)
 	}
@@ -664,7 +659,7 @@ func formatShortTime(completedAt string) string {
 	if err != nil {
 		return completedAt
 	}
-	return t.In(pstLocation).Format("Mon 3:04pm")
+	return t.In(_pstLocation).Format("Mon 3:04pm")
 }
 
 func formatTimingDiff(runTimeMS, parTimeMS int64) string {
@@ -684,6 +679,26 @@ func formatTimingDiff(runTimeMS, parTimeMS int64) string {
 
 	return fmt.Sprintf("(%s%d:%02d)", sign, mins, secs)
 }
+
+/*
+func shortenDungeonName(dungeon string) string {
+	replacements := map[string]string{
+		"Magisters’ Terrace":      "Magisters",
+		"Maisara Caverns":         "Maisara",
+		"Nexus Point Xenas":       "Nexus Point",
+		"Windrunner Spire":        "Windrunner",
+		"Algeth’ar Academy":       "Algeth’ar",
+		"Seat of the Triumvirate": "Triumvirate",
+		"Skyreach":                "Skyreach",
+		"Pit of Saron":            "Saron",
+	}
+
+	if short, ok := replacements[dungeon]; ok {
+		return short
+	}
+	return dungeon
+}
+*/
 
 func shortenDungeonName(dungeon string) string {
 	replacements := map[string]string{

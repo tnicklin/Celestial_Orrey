@@ -13,6 +13,7 @@ import (
 	"github.com/tnicklin/celestial_orrey/timeutil"
 )
 
+// Linker matches RaiderIO completed keys to WarcraftLogs reports.
 type Linker struct {
 	Store        store.Store
 	Client       WCL
@@ -23,12 +24,14 @@ type Linker struct {
 	DungeonMatch func(dungeon, zone string) bool
 }
 
+// LinkerParams holds configuration for creating a new Linker.
 type LinkerParams struct {
 	Store  store.Store
 	Client WCL
 	Filter ReportFilter
 }
 
+// NewLinker creates a new Linker with the given parameters.
 func NewLinker(p LinkerParams) *Linker {
 	return &Linker{
 		Store:       p.Store,
@@ -43,6 +46,7 @@ func NewLinker(p LinkerParams) *Linker {
 	}
 }
 
+// RunOnce attempts to link RaiderIO keys completed since the given time to WarcraftLogs reports.
 func (l *Linker) RunOnce(ctx context.Context, since time.Time) (int, error) {
 	if l.Store == nil || l.Client == nil {
 		return 0, errors.New("warcraftlogs: store and client are required")
@@ -257,27 +261,22 @@ func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlu
 	for i := range runs {
 		run := &runs[i]
 
-		// Must have keystone level
 		if run.KeystoneLevel == 0 {
 			continue
 		}
 
-		// Skip incomplete runs (no kill and no keystone time)
 		if !run.Kill && run.KeystoneTime == 0 {
 			continue
 		}
 
-		// Must match key level
 		if run.KeystoneLevel != key.KeyLevel {
 			continue
 		}
 
-		// Must match dungeon name
 		if !matchFn(key.Dungeon, run.Dungeon) {
 			continue
 		}
 
-		// Check timestamp proximity
 		timeDiff := keyTime.Sub(run.CompletedAt)
 		if timeDiff < 0 {
 			timeDiff = -timeDiff
@@ -286,7 +285,6 @@ func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlu
 			continue
 		}
 
-		// Calculate confidence score
 		confidence := calculateMatchConfidence(key, run, timeDiff, window)
 
 		if confidence > bestConfidence {
@@ -310,11 +308,9 @@ func matchKeyToRuns(key models.CompletedKey, keyTime time.Time, runs []MythicPlu
 func calculateMatchConfidence(key models.CompletedKey, run *MythicPlusRun, timeDiff, window time.Duration) float64 {
 	confidence := 0.0
 
-	// Time proximity (up to 40% of score)
 	timeScore := 1.0 - (float64(timeDiff) / float64(window))
 	confidence += timeScore * 0.4
 
-	// Run time match (up to 40% of score)
 	if run.KeystoneTime > 0 && key.RunTimeMS > 0 {
 		runTimeDiff := math.Abs(float64(run.KeystoneTime - key.RunTimeMS))
 		if runTimeDiff < 5000 {
@@ -323,7 +319,6 @@ func calculateMatchConfidence(key models.CompletedKey, run *MythicPlusRun, timeD
 		}
 	}
 
-	// Key level exact match (20% of score)
 	confidence += 0.2
 
 	return confidence
