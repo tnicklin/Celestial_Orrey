@@ -452,16 +452,9 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Week of %s\n\n", since.Format("Jan 2")))
-
-	for _, char := range matchingChars {
-		c.writeReportLine(ctx, &sb, char, since)
-	}
-
 	embed := &discordgo.MessageEmbed{
 		Title:       "Great Vault Progress",
-		Description: sb.String(),
+		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, matchingChars, since)),
 		Color:       embedColor,
 	}
 
@@ -482,56 +475,81 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		return cmdResponse{content: "No characters in database."}, nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Week of %s\n\n", since.Format("Jan 2")))
-
-	for _, char := range allChars {
-		c.writeReportLine(ctx, &sb, char, since)
-	}
-
 	embed := &discordgo.MessageEmbed{
 		Title:       "Great Vault Progress",
-		Description: sb.String(),
+		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, allChars, since)),
 		Color:       embedColor,
 	}
 
 	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
-// writeReportLine writes a single character's vault progress line to the builder.
-// Format: **char_name** (score) — 4 keys  [282 M4] [279 M3] [ — ]
-func (c *DefaultDiscord) writeReportLine(ctx context.Context, sb *strings.Builder, char models.Character, since time.Time) {
-	keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
-	if err != nil {
-		c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
-		return
-	}
+type reportEntry struct {
+	label    string
+	keyCount int
+	vault1   string
+	vault2   string
+	vault3   string
+}
 
-	var charKeys []models.CompletedKey
-	for _, key := range keys {
-		if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
-			charKeys = append(charKeys, key)
+// buildReportBlock collects character data and formats it as an aligned code block.
+func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Character, since time.Time) string {
+	var entries []reportEntry
+	maxLabelLen := 0
+
+	for _, char := range chars {
+		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
+		if err != nil {
+			c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
+			continue
 		}
+
+		var charKeys []models.CompletedKey
+		for _, key := range keys {
+			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
+				charKeys = append(charKeys, key)
+			}
+		}
+
+		sortKeysByLevel(charKeys)
+
+		label := char.Name
+		if char.RIOScore > 0 {
+			label = fmt.Sprintf("%s (%.1f)", char.Name, char.RIOScore)
+		}
+		if len(label) > maxLabelLen {
+			maxLabelLen = len(label)
+		}
+
+		entries = append(entries, reportEntry{
+			label:    label,
+			keyCount: len(charKeys),
+			vault1:   getVaultSlotPlain(charKeys, 0),
+			vault2:   getVaultSlotPlain(charKeys, 3),
+			vault3:   getVaultSlotPlain(charKeys, 7),
+		})
 	}
 
-	sortKeysByLevel(charKeys)
-
-	keyWord := "keys"
-	if len(charKeys) == 1 {
-		keyWord = "key"
+	var sb strings.Builder
+	sb.WriteString("```\n")
+	for _, e := range entries {
+		keyWord := "keys"
+		if e.keyCount == 1 {
+			keyWord = "key "
+		}
+		sb.WriteString(fmt.Sprintf("%-*s  %2d %s  %s %s %s\n",
+			maxLabelLen, e.label, e.keyCount, keyWord, e.vault1, e.vault2, e.vault3))
 	}
+	sb.WriteString("```")
+	return sb.String()
+}
 
-	vault1 := getVaultSlotEmbed(charKeys, 0)
-	vault2 := getVaultSlotEmbed(charKeys, 3)
-	vault3 := getVaultSlotEmbed(charKeys, 7)
-
-	scoreStr := ""
-	if char.RIOScore > 0 {
-		scoreStr = fmt.Sprintf(" (%.1f)", char.RIOScore)
+// getVaultSlotPlain returns a fixed-width plain text vault slot for code blocks.
+func getVaultSlotPlain(keys []models.CompletedKey, index int) string {
+	if index >= len(keys) {
+		return EmptySlotDisplay()
 	}
-
-	sb.WriteString(fmt.Sprintf("**%s**%s — %d %s  %s %s %s\n",
-		char.Name, scoreStr, len(charKeys), keyWord, vault1, vault2, vault3))
+	return VaultRewards.GetVaultSlotDisplay(keys[index].KeyLevel)
 }
 
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
@@ -539,15 +557,6 @@ func sortKeysByLevel(keys []models.CompletedKey) {
 	sort.Slice(keys, func(i, j int) bool {
 		return keys[i].KeyLevel > keys[j].KeyLevel
 	})
-}
-
-// getVaultSlotEmbed returns the embed-friendly vault slot display for a given key index.
-func getVaultSlotEmbed(keys []models.CompletedKey, index int) string {
-	if index >= len(keys) {
-		return EmptySlotDisplayDash()
-	}
-	keyLevel := keys[index].KeyLevel
-	return VaultRewards.GetVaultSlotDisplayBold(keyLevel)
 }
 
 func (c *DefaultDiscord) cmdElv(ctx context.Context) (cmdResponse, error) {
