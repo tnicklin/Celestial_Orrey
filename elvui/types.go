@@ -10,12 +10,12 @@ type Poller interface {
 
 // VersionInfo holds the ElvUI version information from the TukUI API.
 type VersionInfo struct {
-	Name       string `json:"name"`
-	Version    string `json:"version"`
-	URL        string `json:"url"`
-	LastUpdate string `json:"lastupdate"`
-	Changelog  string `json:"changelog"`
-	WebURL     string `json:"web_url"`
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	URL          string `json:"url"`
+	LastUpdate   string `json:"last_update"`
+	ChangelogURL string `json:"changelog_url"`
+	WebURL       string `json:"web_url"`
 }
 
 // NotifyFunc is called when a new ElvUI version is detected.

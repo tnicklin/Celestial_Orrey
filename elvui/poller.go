@@ -99,7 +99,7 @@ func (p *DefaultPoller) pollOnce(ctx context.Context, isInitial bool) {
 	_ = p.store.UpsertElvUIVersion(ctx, store.ElvUIVersion{
 		Version:      info.Version,
 		DownloadURL:  info.URL,
-		ChangelogURL: info.Changelog,
+		ChangelogURL: info.ChangelogURL,
 		LastUpdate:   info.LastUpdate,
 	})
 

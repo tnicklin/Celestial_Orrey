@@ -14,6 +14,6 @@ func (c *Config) Defaults() {
 		c.PollInterval = 5 * time.Minute
 	}
 	if c.APIURL == "" {
-		c.APIURL = "https://www.tukui.org/api.php?ui=elvui"
+		c.APIURL = "https://api.tukui.org/v1/addon/elvui"
 	}
 }

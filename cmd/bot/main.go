@@ -123,7 +123,7 @@ func build() (result, error) {
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 		OnNewVersion: func(v elvui.VersionInfo) {
 			msg := fmt.Sprintf("**ElvUI %s** is now available!\n[Download](%s) | [Changelog](%s)",
-				v.Version, v.URL, v.Changelog)
+				v.Version, v.URL, v.ChangelogURL)
 			if err := discordClient.WriteMessage(cfg.Discord.ListenChannel, msg); err != nil {
 				appLogger.ErrorW("elvui notification", "error", err)
 			}
