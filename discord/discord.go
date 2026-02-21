@@ -485,17 +485,16 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 }
 
 type reportEntry struct {
-	label    string
+	name     string
+	score    string
 	keyCount int
-	vault1   string
-	vault2   string
-	vault3   string
+	vault    string // "M4/M3/--"
 }
 
-// buildReportBlock collects character data and formats it as an aligned code block.
+// buildReportBlock collects character data and formats it as an aligned code block table.
 func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Character, since time.Time) string {
 	var entries []reportEntry
-	maxLabelLen := 0
+	maxNameLen := 0
 
 	for _, char := range chars {
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
@@ -513,43 +512,53 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 
 		sortKeysByLevel(charKeys)
 
-		label := char.Name
-		if char.RIOScore > 0 {
-			label = fmt.Sprintf("%s (%.1f)", char.Name, char.RIOScore)
-		}
-		if len(label) > maxLabelLen {
-			maxLabelLen = len(label)
+		if len(char.Name) > maxNameLen {
+			maxNameLen = len(char.Name)
 		}
 
+		score := "--"
+		if char.RIOScore > 0 {
+			score = fmt.Sprintf("%.1f", char.RIOScore)
+		}
+
+		v1 := vaultShortCode(charKeys, 0)
+		v2 := vaultShortCode(charKeys, 3)
+		v3 := vaultShortCode(charKeys, 7)
+
 		entries = append(entries, reportEntry{
-			label:    label,
+			name:     char.Name,
+			score:    score,
 			keyCount: len(charKeys),
-			vault1:   getVaultSlotPlain(charKeys, 0),
-			vault2:   getVaultSlotPlain(charKeys, 3),
-			vault3:   getVaultSlotPlain(charKeys, 7),
+			vault:    fmt.Sprintf("%s/%s/%s", v1, v2, v3),
 		})
 	}
 
+	// Ensure name column is at least as wide as "Name" header
+	if maxNameLen < 4 {
+		maxNameLen = 4
+	}
+
+	rowFmt := fmt.Sprintf("%%-%ds | %%6s | %%4s | %%s\n", maxNameLen)
+
 	var sb strings.Builder
 	sb.WriteString("```\n")
+	sb.WriteString(fmt.Sprintf(rowFmt, "Name", "Score", "Keys", "Vault"))
+	sb.WriteString(fmt.Sprintf("%s-|-%s-|-%s-|-%s\n",
+		strings.Repeat("-", maxNameLen), "------", "----", "-----------"))
 	for _, e := range entries {
-		keyWord := "keys"
-		if e.keyCount == 1 {
-			keyWord = "key "
-		}
-		sb.WriteString(fmt.Sprintf("%-*s  %2d %s  %s %s %s\n",
-			maxLabelLen, e.label, e.keyCount, keyWord, e.vault1, e.vault2, e.vault3))
+		sb.WriteString(fmt.Sprintf(rowFmt,
+			e.name, e.score, fmt.Sprintf("%d", e.keyCount), e.vault))
 	}
 	sb.WriteString("```")
 	return sb.String()
 }
 
-// getVaultSlotPlain returns a fixed-width plain text vault slot for code blocks.
-func getVaultSlotPlain(keys []models.CompletedKey, index int) string {
+// vaultShortCode returns the item level for a vault slot, or "--" if empty.
+func vaultShortCode(keys []models.CompletedKey, index int) string {
 	if index >= len(keys) {
-		return EmptySlotDisplay()
+		return "---"
 	}
-	return VaultRewards.GetVaultSlotDisplay(keys[index].KeyLevel)
+	return fmt.Sprintf("%d", VaultRewards.GetItemLevel(keys[index].KeyLevel))
 }
 
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
