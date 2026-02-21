@@ -452,42 +452,17 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
 
-	embed := &discordgo.MessageEmbed{
-		Title:       "Great Vault Progress",
-		Description: fmt.Sprintf("Week of %s", since.Format("Jan 2")),
-		Color:       embedColor,
-	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Week of %s\n\n", since.Format("Jan 2")))
 
 	for _, char := range matchingChars {
-		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
-		if err != nil {
-			c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
-			continue
-		}
+		c.writeReportLine(ctx, &sb, char, since)
+	}
 
-		var charKeys []models.CompletedKey
-		for _, key := range keys {
-			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
-				charKeys = append(charKeys, key)
-			}
-		}
-
-		sortKeysByLevel(charKeys)
-
-		keyWord := "keys"
-		if len(charKeys) == 1 {
-			keyWord = "key"
-		}
-
-		vault1 := getVaultSlotEmbed(charKeys, 0)
-		vault2 := getVaultSlotEmbed(charKeys, 3)
-		vault3 := getVaultSlotEmbed(charKeys, 7)
-
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   formatCharacterName(char),
-			Value:  fmt.Sprintf("%d %s\n%s %s %s", len(charKeys), keyWord, vault1, vault2, vault3),
-			Inline: true,
-		})
+	embed := &discordgo.MessageEmbed{
+		Title:       "Great Vault Progress",
+		Description: sb.String(),
+		Color:       embedColor,
 	}
 
 	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
@@ -507,52 +482,56 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		return cmdResponse{content: "No characters in database."}, nil
 	}
 
-	embed := &discordgo.MessageEmbed{
-		Title:       "Great Vault Progress",
-		Description: fmt.Sprintf("Week of %s", since.Format("Jan 2")),
-		Color:       embedColor,
-	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Week of %s\n\n", since.Format("Jan 2")))
 
 	for _, char := range allChars {
-		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
-		if err != nil {
-			c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
-			continue
-		}
+		c.writeReportLine(ctx, &sb, char, since)
+	}
 
-		var charKeys []models.CompletedKey
-		for _, key := range keys {
-			if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
-				charKeys = append(charKeys, key)
-			}
-		}
-
-		sortKeysByLevel(charKeys)
-
-		keyWord := "keys"
-		if len(charKeys) == 1 {
-			keyWord = "key"
-		}
-
-		vault1 := getVaultSlotEmbed(charKeys, 0)
-		vault2 := getVaultSlotEmbed(charKeys, 3)
-		vault3 := getVaultSlotEmbed(charKeys, 7)
-
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   formatCharacterName(char),
-			Value:  fmt.Sprintf("%d %s\n%s %s %s", len(charKeys), keyWord, vault1, vault2, vault3),
-			Inline: true,
-		})
+	embed := &discordgo.MessageEmbed{
+		Title:       "Great Vault Progress",
+		Description: sb.String(),
+		Color:       embedColor,
 	}
 
 	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
-func formatCharacterName(char models.Character) string {
-	if char.RIOScore > 0 {
-		return fmt.Sprintf("%s — %.1f", char.Name, char.RIOScore)
+// writeReportLine writes a single character's vault progress line to the builder.
+// Format: **char_name** (score) — 4 keys  [282 M4] [279 M3] [ — ]
+func (c *DefaultDiscord) writeReportLine(ctx context.Context, sb *strings.Builder, char models.Character, since time.Time) {
+	keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
+	if err != nil {
+		c.logger.ErrorW("list keys for character", "character", char.Name, "error", err)
+		return
 	}
-	return char.Name
+
+	var charKeys []models.CompletedKey
+	for _, key := range keys {
+		if strings.EqualFold(key.Realm, char.Realm) && strings.EqualFold(key.Region, char.Region) {
+			charKeys = append(charKeys, key)
+		}
+	}
+
+	sortKeysByLevel(charKeys)
+
+	keyWord := "keys"
+	if len(charKeys) == 1 {
+		keyWord = "key"
+	}
+
+	vault1 := getVaultSlotEmbed(charKeys, 0)
+	vault2 := getVaultSlotEmbed(charKeys, 3)
+	vault3 := getVaultSlotEmbed(charKeys, 7)
+
+	scoreStr := ""
+	if char.RIOScore > 0 {
+		scoreStr = fmt.Sprintf(" (%.1f)", char.RIOScore)
+	}
+
+	sb.WriteString(fmt.Sprintf("**%s**%s — %d %s  %s %s %s\n",
+		char.Name, scoreStr, len(charKeys), keyWord, vault1, vault2, vault3))
 }
 
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
