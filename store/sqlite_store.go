@@ -517,9 +517,10 @@ func (s *SQLiteStore) ListCharacters(ctx context.Context) ([]models.Character, e
 	out := make([]models.Character, 0, len(rows))
 	for _, row := range rows {
 		char := models.Character{
-			Region: row.Region,
-			Realm:  row.Realm,
-			Name:   row.Name,
+			Region:   row.Region,
+			Realm:    row.Realm,
+			Name:     row.Name,
+			RIOScore: row.RioScore,
 		}
 		out = append(out, char)
 	}
@@ -546,10 +547,33 @@ func (s *SQLiteStore) GetCharacter(ctx context.Context, name, realm, region stri
 	}
 
 	return &models.Character{
-		Region: row.Region,
-		Realm:  row.Realm,
-		Name:   row.Name,
+		Region:   row.Region,
+		Realm:    row.Realm,
+		Name:     row.Name,
+		RIOScore: row.RioScore,
 	}, nil
+}
+
+func (s *SQLiteStore) UpdateCharacterScore(ctx context.Context, name, realm, region string, score float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	if err := queries.UpdateCharacterScore(ctx, db.UpdateCharacterScoreParams{
+		RioScore: score,
+		LOWER:    name,
+		LOWER_2:  realm,
+		LOWER_3:  region,
+	}); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
 }
 
 func (s *SQLiteStore) DeleteCharacter(ctx context.Context, name, realm, region string) error {
@@ -603,6 +627,51 @@ func (s *SQLiteStore) DeleteCharacter(ctx context.Context, name, realm, region s
 	// Schedule debounced flush instead of immediate flush
 	s.scheduleFlush()
 	return nil
+}
+
+func (s *SQLiteStore) UpsertElvUIVersion(ctx context.Context, v ElvUIVersion) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	if err := queries.UpsertElvUIVersion(ctx, db.UpsertElvUIVersionParams{
+		Version:      v.Version,
+		DownloadUrl:  v.DownloadURL,
+		ChangelogUrl: v.ChangelogURL,
+		LastUpdate:   v.LastUpdate,
+	}); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
+}
+
+func (s *SQLiteStore) GetElvUIVersion(ctx context.Context) (*ElvUIVersion, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.db == nil {
+		return nil, errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	row, err := queries.GetElvUIVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ElvUIVersion{
+		Version:      row.Version,
+		DownloadURL:  row.DownloadUrl,
+		ChangelogURL: row.ChangelogUrl,
+		LastUpdate:   row.LastUpdate,
+		CheckedAt:    row.CheckedAt,
+	}, nil
 }
 
 func (s *SQLiteStore) flushLocked(ctx context.Context, path string) error {
@@ -696,6 +765,11 @@ func (s *SQLiteStore) applyMigrations(ctx context.Context) error {
 			continue
 		}
 		if _, err := s.db.ExecContext(ctx, sqlText); err != nil {
+			// ALTER TABLE ADD COLUMN is not idempotent in SQLite;
+			// ignore "duplicate column" errors on re-applied migrations.
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
 	}

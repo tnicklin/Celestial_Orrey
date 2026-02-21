@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tnicklin/celestial_orrey/clock"
 	"github.com/tnicklin/celestial_orrey/discord"
+	"github.com/tnicklin/celestial_orrey/elvui"
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/raiderio"
 	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
@@ -34,6 +36,7 @@ type appConfig struct {
 	RaiderIO     raiderio.Config     `yaml:"raiderio"`
 	WarcraftLogs warcraftlogs.Config `yaml:"warcraftlogs"`
 	Store        store.Config        `yaml:"store"`
+	ElvUI        elvui.Config        `yaml:"elvui"`
 }
 
 type result struct {
@@ -42,10 +45,12 @@ type result struct {
 	Config        appConfig
 	Logger        logger.Logger
 	Store         *store.SQLiteStore
+	NTPClock      *clock.NTPClock
 	RaiderIO      rioClient.Client
 	RIOPoller     raiderio.Poller
 	WarcraftLogs  warcraftlogs.WCL
 	WCLPoller     warcraftlogs.Poller
+	ElvUIPoller   elvui.Poller
 	DiscordClient discord.Discord
 }
 
@@ -59,6 +64,8 @@ func build() (result, error) {
 	if err != nil {
 		return result{}, fmt.Errorf("initialize logger: %w", err)
 	}
+
+	ntpClock := clock.NewNTP(clock.WithLogger(appLogger))
 
 	st := store.NewSQLiteStore(store.Params{
 		Path:      cfg.Store.Path,
@@ -88,11 +95,13 @@ func build() (result, error) {
 		Client:    rio,
 		Store:     st,
 		WCLLinker: wclLinker,
+		Clock:     ntpClock,
 	})
 
 	wclPoller := warcraftlogs.NewPoller(warcraftlogs.PollerParams{
 		Store:    st,
 		Client:   wclClient,
+		Clock:    ntpClock,
 		Interval: 5 * time.Minute,
 	})
 
@@ -102,20 +111,36 @@ func build() (result, error) {
 		RaiderIO:     rio,
 		WarcraftLogs: wclClient,
 		Logger:       appLogger,
+		Clock:        ntpClock,
 	})
 	if err != nil {
 		return result{}, fmt.Errorf("discord client: %w", err)
 	}
+
+	elvuiPoller := elvui.New(elvui.Params{
+		Config:     cfg.ElvUI,
+		Store:      st,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		OnNewVersion: func(v elvui.VersionInfo) {
+			msg := fmt.Sprintf("**ElvUI %s** is now available!\n[Download](%s) | [Changelog](%s)",
+				v.Version, v.URL, v.Changelog)
+			if err := discordClient.WriteMessage(cfg.Discord.ListenChannel, msg); err != nil {
+				appLogger.ErrorW("elvui notification", "error", err)
+			}
+		},
+	})
 
 	return result{
 		Config:        cfg,
 		Logger:        appLogger,
 		DiscordClient: discordClient,
 		Store:         st,
+		NTPClock:      ntpClock,
 		RaiderIO:      rio,
 		RIOPoller:     rioPoller,
 		WarcraftLogs:  wclClient,
 		WCLPoller:     wclPoller,
+		ElvUIPoller:   elvuiPoller,
 	}, nil
 }
 
@@ -125,15 +150,27 @@ type runParams struct {
 	Lifecycle     fx.Lifecycle
 	Config        appConfig
 	Store         *store.SQLiteStore
+	NTPClock      *clock.NTPClock
 	RaiderIO      rioClient.Client
 	RIOPoller     raiderio.Poller
 	WarcraftLogs  warcraftlogs.WCL
 	WCLPoller     warcraftlogs.Poller
+	ElvUIPoller   elvui.Poller
 	DiscordClient discord.Discord
 	Logger        logger.Logger
 }
 
 func run(p runParams) error {
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			return p.NTPClock.Start(ctx)
+		},
+		OnStop: func(_ context.Context) error {
+			p.NTPClock.Stop()
+			return nil
+		},
+	})
+
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
 			ctx := context.Background()
@@ -188,6 +225,20 @@ func run(p runParams) error {
 		},
 		OnStop: func(_ context.Context) error {
 			p.RIOPoller.Stop()
+			return nil
+		},
+	})
+
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			if err := p.ElvUIPoller.Start(context.Background()); err != nil {
+				return fmt.Errorf("start elvui poller: %w", err)
+			}
+
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.ElvUIPoller.Stop()
 			return nil
 		},
 	})

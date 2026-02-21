@@ -1,0 +1,1 @@
+ALTER TABLE characters ADD COLUMN rio_score REAL NOT NULL DEFAULT 0;

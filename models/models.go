@@ -8,9 +8,10 @@ import (
 )
 
 type Character struct {
-	Name   string `json:"name" yaml:"name"`
-	Realm  string `json:"realm" yaml:"realm"`
-	Region string `json:"region" yaml:"region"`
+	Name     string  `json:"name" yaml:"name"`
+	Realm    string  `json:"realm" yaml:"realm"`
+	Region   string  `json:"region" yaml:"region"`
+	RIOScore float64 `json:"rio_score" yaml:"rio_score"`
 }
 
 func (c Character) Key() string {

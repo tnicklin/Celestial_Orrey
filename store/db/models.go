@@ -9,10 +9,11 @@ import (
 )
 
 type Character struct {
-	ID     int64  `json:"id"`
-	Region string `json:"region"`
-	Realm  string `json:"realm"`
-	Name   string `json:"name"`
+	ID       int64   `json:"id"`
+	Region   string  `json:"region"`
+	Realm    string  `json:"realm"`
+	Name     string  `json:"name"`
+	RioScore float64 `json:"rio_score"`
 }
 
 type CompletedKey struct {
@@ -25,6 +26,15 @@ type CompletedKey struct {
 	CompletedAt string `json:"completed_at"`
 	Source      string `json:"source"`
 	InsertedAt  string `json:"inserted_at"`
+}
+
+type ElvuiVersion struct {
+	ID           int64  `json:"id"`
+	Version      string `json:"version"`
+	DownloadUrl  string `json:"download_url"`
+	ChangelogUrl string `json:"changelog_url"`
+	LastUpdate   string `json:"last_update"`
+	CheckedAt    string `json:"checked_at"`
 }
 
 type WarcraftlogsLink struct {

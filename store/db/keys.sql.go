@@ -86,7 +86,7 @@ func (q *Queries) DeleteWarcraftLogsLinksByCharacter(ctx context.Context, id int
 }
 
 const getCharacter = `-- name: GetCharacter :one
-SELECT id, region, realm, name FROM characters
+SELECT id, region, realm, name, rio_score FROM characters
 WHERE LOWER(name) = LOWER(?) AND LOWER(realm) = LOWER(?) AND LOWER(region) = LOWER(?)
 `
 
@@ -104,6 +104,7 @@ func (q *Queries) GetCharacter(ctx context.Context, arg GetCharacterParams) (Cha
 		&i.Region,
 		&i.Realm,
 		&i.Name,
+		&i.RioScore,
 	)
 	return i, err
 }
@@ -222,13 +223,14 @@ func (q *Queries) ListAllKeysWithCharacters(ctx context.Context) ([]ListAllKeysW
 }
 
 const listCharacters = `-- name: ListCharacters :many
-SELECT region, realm, name FROM characters ORDER BY region, realm, name
+SELECT region, realm, name, rio_score FROM characters ORDER BY region, realm, name
 `
 
 type ListCharactersRow struct {
-	Region string `json:"region"`
-	Realm  string `json:"realm"`
-	Name   string `json:"name"`
+	Region   string  `json:"region"`
+	Realm    string  `json:"realm"`
+	Name     string  `json:"name"`
+	RioScore float64 `json:"rio_score"`
 }
 
 func (q *Queries) ListCharacters(ctx context.Context) ([]ListCharactersRow, error) {
@@ -240,7 +242,12 @@ func (q *Queries) ListCharacters(ctx context.Context) ([]ListCharactersRow, erro
 	var items []ListCharactersRow
 	for rows.Next() {
 		var i ListCharactersRow
-		if err := rows.Scan(&i.Region, &i.Realm, &i.Name); err != nil {
+		if err := rows.Scan(
+			&i.Region,
+			&i.Realm,
+			&i.Name,
+			&i.RioScore,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -426,6 +433,28 @@ func (q *Queries) ListUnlinkedKeysSince(ctx context.Context, completedAt string)
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateCharacterScore = `-- name: UpdateCharacterScore :exec
+UPDATE characters SET rio_score = ?
+WHERE LOWER(name) = LOWER(?) AND LOWER(realm) = LOWER(?) AND LOWER(region) = LOWER(?)
+`
+
+type UpdateCharacterScoreParams struct {
+	RioScore float64 `json:"rio_score"`
+	LOWER    string  `json:"LOWER"`
+	LOWER_2  string  `json:"LOWER_2"`
+	LOWER_3  string  `json:"LOWER_3"`
+}
+
+func (q *Queries) UpdateCharacterScore(ctx context.Context, arg UpdateCharacterScoreParams) error {
+	_, err := q.db.ExecContext(ctx, updateCharacterScore,
+		arg.RioScore,
+		arg.LOWER,
+		arg.LOWER_2,
+		arg.LOWER_3,
+	)
+	return err
 }
 
 const upsertCharacter = `-- name: UpsertCharacter :one

@@ -42,10 +42,10 @@ func New(p Params) *DefaultClient {
 }
 
 // FetchWeeklyRuns fetches the weekly M+ runs for a character from RaiderIO.
-func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Character) ([]models.CompletedKey, error) {
+func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Character) (ProfileResult, error) {
 	endpoint, err := url.Parse(c.baseURL)
 	if err != nil {
-		return nil, err
+		return ProfileResult{}, err
 	}
 	endpoint.Path = "/api/v1/characters/profile"
 
@@ -53,12 +53,12 @@ func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Ch
 	query.Set("region", character.Region)
 	query.Set("realm", character.Realm)
 	query.Set("name", character.Name)
-	query.Set("fields", "mythic_plus_weekly_highest_level_runs")
+	query.Set("fields", "mythic_plus_weekly_highest_level_runs,mythic_plus_scores_by_season:current")
 	endpoint.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, err
+		return ProfileResult{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	if c.userAgent != "" {
@@ -67,18 +67,18 @@ func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Ch
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return ProfileResult{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		return nil, fmt.Errorf("raiderio: status %d: %s", resp.StatusCode, string(body))
+		return ProfileResult{}, fmt.Errorf("raiderio: status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var payload profileResponse
 	if err = json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
+		return ProfileResult{}, err
 	}
 
 	out := make([]models.CompletedKey, 0, len(payload.WeeklyRuns))
@@ -98,11 +98,25 @@ func (c *DefaultClient) FetchWeeklyRuns(ctx context.Context, character models.Ch
 		out = append(out, key)
 	}
 
-	return out, nil
+	var score float64
+	if len(payload.Scores) > 0 {
+		score = payload.Scores[0].Scores.All
+	}
+
+	return ProfileResult{Keys: out, RIOScore: score}, nil
 }
 
 type profileResponse struct {
-	WeeklyRuns []weeklyRun `json:"mythic_plus_weekly_highest_level_runs"`
+	WeeklyRuns []weeklyRun    `json:"mythic_plus_weekly_highest_level_runs"`
+	Scores     []seasonScore  `json:"mythic_plus_scores_by_season"`
+}
+
+type seasonScore struct {
+	Scores scoreValues `json:"scores"`
+}
+
+type scoreValues struct {
+	All float64 `json:"all"`
 }
 
 type weeklyRun struct {

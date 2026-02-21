@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/tnicklin/celestial_orrey/clock"
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
 	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
@@ -19,6 +20,16 @@ import (
 )
 
 const commandPrefix = "!"
+
+// embedColor is the Mythic+ themed purple used for all embeds.
+const embedColor = 0x9B59B6
+
+// cmdResponse holds the response from a command handler.
+// Either content (plain text) or embeds (rich embed) should be set.
+type cmdResponse struct {
+	content string
+	embeds  []*discordgo.MessageEmbed
+}
 
 var _pstLocation = timeutil.Location()
 
@@ -32,6 +43,7 @@ type DefaultDiscord struct {
 	raiderIO      rioClient.Client
 	warcraftLogs  warcraftlogs.WCL
 	logger        logger.Logger
+	clock         clock.Clock
 	removeHandler func()
 	stopScheduler chan struct{}
 	schedulerDone chan struct{}
@@ -43,6 +55,7 @@ type Params struct {
 	RaiderIO     rioClient.Client
 	WarcraftLogs warcraftlogs.WCL
 	Logger       logger.Logger
+	Clock        clock.Clock
 }
 
 func New(p Params) (*DefaultDiscord, error) {
@@ -53,6 +66,11 @@ func New(p Params) (*DefaultDiscord, error) {
 		return nil, fmt.Errorf("create discord session: %w", err)
 	}
 
+	clk := p.Clock
+	if clk == nil {
+		clk = clock.System()
+	}
+
 	return &DefaultDiscord{
 		session:       session,
 		guildID:       cfg.GuildID,
@@ -61,6 +79,7 @@ func New(p Params) (*DefaultDiscord, error) {
 		raiderIO:      p.RaiderIO,
 		warcraftLogs:  p.WarcraftLogs,
 		logger:        p.Logger,
+		clock:         clk,
 	}, nil
 }
 
@@ -101,7 +120,8 @@ func (c *DefaultDiscord) runScheduler() {
 		select {
 		case <-c.stopScheduler:
 			return
-		case now := <-ticker.C:
+		case <-ticker.C:
+			now := c.clock.Now()
 			pstNow := now.In(_pstLocation)
 
 			if pstNow.Hour() == 7 && pstNow.Minute() == 0 {
@@ -130,15 +150,23 @@ func (c *DefaultDiscord) postDailyAnnouncement(now time.Time) {
 		return
 	}
 
-	resetTime := timeutil.WeeklyReset()
-	report, err := c.formatAllCharactersReport(ctx, resetTime)
+	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
+	resp, err := c.formatAllCharactersReport(ctx, resetTime)
 	if err != nil {
 		c.logger.ErrorW("generate report", "error", err)
 		return
 	}
 
-	if err := c.WriteMessage(c.listenChannel, report); err != nil {
-		c.logger.ErrorW("post daily report", "error", err)
+	if len(resp.embeds) > 0 {
+		if _, err := c.session.ChannelMessageSendComplex(c.listenChannel, &discordgo.MessageSend{
+			Embeds: resp.embeds,
+		}); err != nil {
+			c.logger.ErrorW("post daily report", "error", err)
+		}
+	} else if resp.content != "" {
+		if err := c.WriteMessage(c.listenChannel, resp.content); err != nil {
+			c.logger.ErrorW("post daily report", "error", err)
+		}
 	}
 }
 
@@ -146,6 +174,7 @@ const (
 	_cmdKeys   = "keys"
 	_cmdReport = "report"
 	_cmdChar   = "char"
+	_cmdElv    = "elv"
 	_cmdHelp   = "help"
 )
 
@@ -184,30 +213,40 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	args := parts[1:]
 
 	var (
-		response string
-		err      error
+		resp cmdResponse
+		err  error
 	)
 
 	ctx := context.Background()
 	switch cmd {
 	case _cmdKeys:
-		response, err = c.cmdKeys(ctx, args)
+		resp, err = c.cmdKeys(ctx, args)
 	case _cmdReport:
-		response, err = c.cmdReport(ctx, args)
+		resp, err = c.cmdReport(ctx, args)
 	case _cmdChar:
-		response, err = c.cmdChar(ctx, args)
+		var s string
+		s, err = c.cmdChar(ctx, args)
+		resp = cmdResponse{content: s}
+	case _cmdElv:
+		resp, err = c.cmdElv(ctx)
 	case _cmdHelp:
-		response = c.cmdHelp()
+		resp = cmdResponse{content: c.cmdHelp()}
 	default:
 		return
 	}
 	if err != nil {
 		c.logger.ErrorW("command failed", "command", cmd, "error", err)
-		response = fmt.Sprintf("Error: %v", err)
+		resp = cmdResponse{content: fmt.Sprintf("Error: %v", err)}
 	}
 
-	if response != "" {
-		if _, err := s.ChannelMessageSend(m.ChannelID, response); err != nil {
+	if len(resp.embeds) > 0 {
+		if _, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			Embeds: resp.embeds,
+		}); err != nil {
+			c.logger.ErrorW("failed to send response", "error", err)
+		}
+	} else if resp.content != "" {
+		if _, err := s.ChannelMessageSend(m.ChannelID, resp.content); err != nil {
 			c.logger.ErrorW("failed to send response", "error", err)
 		}
 	}
@@ -215,15 +254,15 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 
 // cmdKeys handles the !keys command
 // Usage: !keys [character_name]
-func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (string, error) {
+func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (cmdResponse, error) {
 	if c.store == nil {
-		return "", errors.New("database not configured")
+		return cmdResponse{}, errors.New("database not configured")
 	}
 
-	resetTime := timeutil.WeeklyReset()
+	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
 
 	if len(args) == 0 {
-		return "Usage: `!keys <character_name>` or `!keys all`\nExample: `!keys askrm` or `!keys all`", nil
+		return cmdResponse{content: "Usage: `!keys <character_name>` or `!keys all`\nExample: `!keys askrm` or `!keys all`"}, nil
 	}
 
 	if strings.ToLower(args[0]) == "all" {
@@ -233,10 +272,10 @@ func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (string, er
 	return c.formatCharacterKeys(ctx, args[0], resetTime)
 }
 
-func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, since time.Time) (string, error) {
+func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, since time.Time) (cmdResponse, error) {
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
-		return "", err
+		return cmdResponse{}, err
 	}
 
 	var matchingChars []models.Character
@@ -258,7 +297,7 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 	}
 
 	if len(matchingChars) == 0 {
-		return fmt.Sprintf("No character found matching **%s**.", query), nil
+		return cmdResponse{content: fmt.Sprintf("No character found matching **%s**.", query)}, nil
 	}
 
 	if len(matchingChars) > 1 {
@@ -266,13 +305,13 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 		for _, char := range matchingChars {
 			realms = append(realms, char.Realm)
 		}
-		return fmt.Sprintf("Ambiguous character name **%s** found on multiple realms: %s\nPlease use `!keys <name>-<realm>` to specify.", query, strings.Join(realms, ", ")), nil
+		return cmdResponse{content: fmt.Sprintf("Ambiguous character name **%s** found on multiple realms: %s\nPlease use `!keys <name>-<realm>` to specify.", query, strings.Join(realms, ", "))}, nil
 	}
 
 	char := matchingChars[0]
 	keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 	if err != nil {
-		return "", err
+		return cmdResponse{}, err
 	}
 
 	var charKeys []models.CompletedKey
@@ -283,20 +322,30 @@ func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, 
 	}
 
 	if len(charKeys) == 0 {
-		return fmt.Sprintf("No keys found for **%s** (%s) this week.", char.Name, char.Realm), nil
+		return cmdResponse{content: fmt.Sprintf("No keys found for **%s** (%s) this week.", char.Name, char.Realm)}, nil
+	}
+
+	keyWord := "keys"
+	if len(charKeys) == 1 {
+		keyWord = "key"
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Keys since reset** (Week of %s)\n\n", since.Format("Jan 2")))
-	c.writeCharacterSection(ctx, &sb, char, charKeys)
+	c.writeKeyLines(ctx, &sb, charKeys)
 
-	return sb.String(), nil
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("%s (%s) — %d %s", char.Name, char.Realm, len(charKeys), keyWord),
+		Description: fmt.Sprintf("Week of %s\n\n%s", since.Format("Jan 2"), sb.String()),
+		Color:       embedColor,
+	}
+
+	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
-func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.Time) (string, error) {
+func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.Time) (cmdResponse, error) {
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
-		return "", err
+		return cmdResponse{}, err
 	}
 
 	// Sort characters by name for deterministic output
@@ -305,13 +354,15 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 	})
 
 	if len(allChars) == 0 {
-		return "No characters in database.", nil
+		return cmdResponse{content: "No characters in database."}, nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Keys since reset** (Week of %s)\n\n", since.Format("Jan 2")))
+	embed := &discordgo.MessageEmbed{
+		Title:       "Keys since reset",
+		Description: fmt.Sprintf("Week of %s", since.Format("Jan 2")),
+		Color:       embedColor,
+	}
 
-	hasKeys := false
 	for _, char := range allChars {
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 		if err != nil {
@@ -329,24 +380,29 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 			continue
 		}
 
-		hasKeys = true
-		c.writeCharacterSection(ctx, &sb, char, charKeys)
+		keyWord := "keys"
+		if len(charKeys) == 1 {
+			keyWord = "key"
+		}
+
+		var sb strings.Builder
+		c.writeKeyLines(ctx, &sb, charKeys)
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:  fmt.Sprintf("%s (%s) — %d %s", char.Name, char.Realm, len(charKeys), keyWord),
+			Value: sb.String(),
+		})
 	}
 
-	if !hasKeys {
-		return "No keys completed this week.", nil
+	if len(embed.Fields) == 0 {
+		return cmdResponse{content: "No keys completed this week."}, nil
 	}
 
-	return sb.String(), nil
+	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
-func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.Builder, char models.Character, keys []models.CompletedKey) {
-	keyWord := "keys"
-	if len(keys) == 1 {
-		keyWord = "key"
-	}
-	sb.WriteString(fmt.Sprintf("**%s** (%s) — %d %s\n", char.Name, char.Realm, len(keys), keyWord))
-
+// writeKeyLines writes individual key lines to a string builder.
+func (c *DefaultDiscord) writeKeyLines(ctx context.Context, sb *strings.Builder, keys []models.CompletedKey) {
 	for _, key := range keys {
 		completedAt := formatShortTime(key.CompletedAt)
 		dungeonShort := shortenDungeonName(key.Dungeon)
@@ -358,15 +414,14 @@ func (c *DefaultDiscord) writeCharacterSection(ctx context.Context, sb *strings.
 			wclLink = fmt.Sprintf(" [log](<%s>)", links[0].URL)
 		}
 
-		sb.WriteString(fmt.Sprintf("• [%s] %d %s %s%s\n", completedAt, key.KeyLevel, dungeonShort, timing, wclLink))
+		sb.WriteString(fmt.Sprintf("%s  +%d %s  %s%s\n", completedAt, key.KeyLevel, dungeonShort, timing, wclLink))
 	}
-	sb.WriteString("\n")
 }
 
 // cmdReport handles the !report command for weekly vault progress.
 // Usage: !report [character_name]
-func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (string, error) {
-	resetTime := timeutil.WeeklyReset()
+func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (cmdResponse, error) {
+	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
 
 	if len(args) > 0 {
 		return c.formatCharacterReport(ctx, args[0], resetTime)
@@ -375,10 +430,10 @@ func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (string, 
 	return c.formatAllCharactersReport(ctx, resetTime)
 }
 
-func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string, since time.Time) (string, error) {
+func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string, since time.Time) (cmdResponse, error) {
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
-		return "", err
+		return cmdResponse{}, err
 	}
 
 	var matchingChars []models.Character
@@ -390,16 +445,18 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 	}
 
 	if len(matchingChars) == 0 {
-		return fmt.Sprintf("No character found with name **%s**.", name), nil
+		return cmdResponse{content: fmt.Sprintf("No character found with name **%s**.", name)}, nil
 	}
 
 	sort.Slice(matchingChars, func(i, j int) bool {
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Great Vault Progress** (Week of %s)\n", since.Format("Jan 2")))
-	sb.WriteString("```ansi\n")
+	embed := &discordgo.MessageEmbed{
+		Title:       "Great Vault Progress",
+		Description: fmt.Sprintf("Week of %s", since.Format("Jan 2")),
+		Color:       embedColor,
+	}
 
 	for _, char := range matchingChars {
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
@@ -416,18 +473,30 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		}
 
 		sortKeysByLevel(charKeys)
-		c.writeReportLine(&sb, char.Name, len(charKeys), charKeys)
+
+		keyWord := "keys"
+		if len(charKeys) == 1 {
+			keyWord = "key"
+		}
+
+		vault1 := getVaultSlotEmbed(charKeys, 0)
+		vault2 := getVaultSlotEmbed(charKeys, 3)
+		vault3 := getVaultSlotEmbed(charKeys, 7)
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   formatCharacterName(char),
+			Value:  fmt.Sprintf("%d %s\n%s %s %s", len(charKeys), keyWord, vault1, vault2, vault3),
+			Inline: true,
+		})
 	}
 
-	sb.WriteString("```")
-
-	return sb.String(), nil
+	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
-func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since time.Time) (string, error) {
+func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since time.Time) (cmdResponse, error) {
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
-		return "", err
+		return cmdResponse{}, err
 	}
 
 	sort.Slice(allChars, func(i, j int) bool {
@@ -435,21 +504,15 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 	})
 
 	if len(allChars) == 0 {
-		return "No characters in database.", nil
+		return cmdResponse{content: "No characters in database."}, nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Great Vault Progress** (Week of %s)\n", since.Format("Jan 2")))
-	sb.WriteString("```ansi\n")
-
-	maxNameLen := 0
-	for _, char := range allChars {
-		if len(char.Name) > maxNameLen {
-			maxNameLen = len(char.Name)
-		}
+	embed := &discordgo.MessageEmbed{
+		Title:       "Great Vault Progress",
+		Description: fmt.Sprintf("Week of %s", since.Format("Jan 2")),
+		Color:       embedColor,
 	}
 
-	hasKeys := false
 	for _, char := range allChars {
 		keys, err := c.store.ListKeysByCharacterSince(ctx, char.Name, since)
 		if err != nil {
@@ -464,46 +527,32 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 			}
 		}
 
-		if len(charKeys) == 0 {
-			continue
+		sortKeysByLevel(charKeys)
+
+		keyWord := "keys"
+		if len(charKeys) == 1 {
+			keyWord = "key"
 		}
 
-		hasKeys = true
-		sortKeysByLevel(charKeys)
-		c.writeReportLineAligned(&sb, char.Name, maxNameLen, len(charKeys), charKeys)
+		vault1 := getVaultSlotEmbed(charKeys, 0)
+		vault2 := getVaultSlotEmbed(charKeys, 3)
+		vault3 := getVaultSlotEmbed(charKeys, 7)
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   formatCharacterName(char),
+			Value:  fmt.Sprintf("%d %s\n%s %s %s", len(charKeys), keyWord, vault1, vault2, vault3),
+			Inline: true,
+		})
 	}
 
-	sb.WriteString("```")
-
-	if !hasKeys {
-		return "No keys completed this week yet.", nil
-	}
-
-	return sb.String(), nil
+	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
-func (c *DefaultDiscord) writeReportLine(sb *strings.Builder, name string, keyCount int, keys []models.CompletedKey) {
-	vault1 := getVaultSlotColored(keys, 0)
-	vault2 := getVaultSlotColored(keys, 3)
-	vault3 := getVaultSlotColored(keys, 7)
-
-	sb.WriteString(fmt.Sprintf("%s: %d keys %s %s %s\n",
-		name, keyCount, vault1, vault2, vault3))
-}
-
-func (c *DefaultDiscord) writeReportLineAligned(sb *strings.Builder, name string, maxNameLen, keyCount int, keys []models.CompletedKey) {
-	vault1 := getVaultSlotColored(keys, 0)
-	vault2 := getVaultSlotColored(keys, 3)
-	vault3 := getVaultSlotColored(keys, 7)
-
-	paddedName := name + strings.Repeat(" ", maxNameLen-len(name))
-	paddedKeys := fmt.Sprintf("%d", keyCount)
-	if keyCount < 10 {
-		paddedKeys = " " + paddedKeys
+func formatCharacterName(char models.Character) string {
+	if char.RIOScore > 0 {
+		return fmt.Sprintf("%s — %.1f", char.Name, char.RIOScore)
 	}
-
-	sb.WriteString(fmt.Sprintf("%s: %s keys %s %s %s\n",
-		paddedName, paddedKeys, vault1, vault2, vault3))
+	return char.Name
 }
 
 // sortKeysByLevel sorts keys by KeyLevel descending (highest first)
@@ -513,13 +562,33 @@ func sortKeysByLevel(keys []models.CompletedKey) {
 	})
 }
 
-// getVaultSlotColored returns the colored vault slot display for ANSI code blocks
-func getVaultSlotColored(keys []models.CompletedKey, index int) string {
+// getVaultSlotEmbed returns the embed-friendly vault slot display for a given key index.
+func getVaultSlotEmbed(keys []models.CompletedKey, index int) string {
 	if index >= len(keys) {
-		return EmptySlotDisplayColored()
+		return EmptySlotDisplayDash()
 	}
 	keyLevel := keys[index].KeyLevel
-	return VaultRewards.GetVaultSlotDisplayColored(keyLevel)
+	return VaultRewards.GetVaultSlotDisplayBold(keyLevel)
+}
+
+func (c *DefaultDiscord) cmdElv(ctx context.Context) (cmdResponse, error) {
+	if c.store == nil {
+		return cmdResponse{}, errors.New("database not configured")
+	}
+
+	v, err := c.store.GetElvUIVersion(ctx)
+	if err != nil {
+		return cmdResponse{content: "No ElvUI version data available yet."}, nil
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title: fmt.Sprintf("ElvUI %s", v.Version),
+		Description: fmt.Sprintf("[Download](%s)\nLast updated: %s\n[Changelog](%s)",
+			v.DownloadURL, v.LastUpdate, v.ChangelogURL),
+		Color: embedColor,
+	}
+
+	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
 }
 
 func (c *DefaultDiscord) cmdHelp() string {
@@ -531,6 +600,7 @@ func (c *DefaultDiscord) cmdHelp() string {
 !report <name>             - Show Great Vault progress for a character
 !char sync <name> <realm>  - Sync character from RaiderIO
 !char purge <name> <realm> - Remove character from database
+!elv                       - Show current ElvUI version
 !help                      - Show this help message
 ` + "```"
 }
@@ -578,13 +648,16 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		Region: "us",
 	}
 
-	keys, err := c.raiderIO.FetchWeeklyRuns(ctx, char)
+	result, err := c.raiderIO.FetchWeeklyRuns(ctx, char)
 	if err != nil {
 		return "", fmt.Errorf("fetch from RaiderIO: %w", err)
 	}
 
+	// Update character's RIO score
+	_ = c.store.UpdateCharacterScore(ctx, char.Name, char.Realm, char.Region, result.RIOScore)
+
 	insertedCount := 0
-	for _, key := range keys {
+	for _, key := range result.Keys {
 		if err := c.store.UpsertCompletedKey(ctx, key); err == nil {
 			insertedCount++
 		}
@@ -598,7 +671,7 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		})
 		linker.MatchWindow = 24 * time.Hour
 
-		for _, key := range keys {
+		for _, key := range result.Keys {
 			existingLinks, _ := c.store.ListWarcraftLogsLinksForKey(ctx, key.KeyID)
 			if len(existingLinks) > 0 {
 				continue
@@ -624,8 +697,13 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 		}
 	}
 
-	return fmt.Sprintf("Synced **%s** (%s-%s): %d keys fetched, %d inserted, %d WCL links created.",
-		char.Name, char.Realm, char.Region, len(keys), insertedCount, linkedCount), nil
+	scoreStr := ""
+	if result.RIOScore > 0 {
+		scoreStr = fmt.Sprintf(" | RIO Score: **%.1f**", result.RIOScore)
+	}
+
+	return fmt.Sprintf("Synced **%s** (%s-%s): %d keys fetched, %d inserted, %d WCL links created.%s",
+		char.Name, char.Realm, char.Region, len(result.Keys), insertedCount, linkedCount, scoreStr), nil
 }
 
 // cmdCharPurge removes a character and all their data from the database

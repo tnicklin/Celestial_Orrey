@@ -122,9 +122,25 @@ func (v VaultRewardTable) GetVaultSlotDisplayColored(keyLevel int) string {
 	return ansiYellow + slot + ansiReset
 }
 
+// GetVaultSlotDisplayBold returns a formatted string with Discord markdown bold for Myth track.
+// Format: **[282 M4]** for myth, [269 H4] for hero.
+func (v VaultRewardTable) GetVaultSlotDisplayBold(keyLevel int) string {
+	t := v.GetThreshold(keyLevel)
+	slot := fmt.Sprintf("[%d %s]", t.ItemLevel, t.ShortCode)
+	if t.IsMythTrack {
+		return "**" + slot + "**"
+	}
+	return slot
+}
+
 // EmptySlotDisplay returns the display for an empty vault slot.
 func EmptySlotDisplay() string {
 	return "[      ]"
+}
+
+// EmptySlotDisplayDash returns a clean dash display for empty vault slots in embeds.
+func EmptySlotDisplayDash() string {
+	return "[ — ]"
 }
 
 // EmptySlotDisplayColored returns the colored display for an empty vault slot.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tnicklin/celestial_orrey/models"
+	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
 )
@@ -65,8 +66,8 @@ type fakeClient struct {
 	runs []models.CompletedKey
 }
 
-func (f *fakeClient) FetchWeeklyRuns(ctx context.Context, c models.Character) ([]models.CompletedKey, error) {
-	return f.runs, nil
+func (f *fakeClient) FetchWeeklyRuns(ctx context.Context, c models.Character) (rioClient.ProfileResult, error) {
+	return rioClient.ProfileResult{Keys: f.runs}, nil
 }
 
 type fakeStore struct {
@@ -109,6 +110,15 @@ func (f *fakeStore) GetCharacter(ctx context.Context, name, realm, region string
 func (f *fakeStore) DeleteCharacter(ctx context.Context, name, realm, region string) error {
 	return nil
 }
+func (f *fakeStore) UpdateCharacterScore(ctx context.Context, name, realm, region string, score float64) error {
+	return nil
+}
 func (f *fakeStore) ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error) {
+	return nil, nil
+}
+func (f *fakeStore) UpsertElvUIVersion(ctx context.Context, v store.ElvUIVersion) error {
+	return nil
+}
+func (f *fakeStore) GetElvUIVersion(ctx context.Context) (*store.ElvUIVersion, error) {
 	return nil, nil
 }

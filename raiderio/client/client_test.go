@@ -25,6 +25,13 @@ func TestFetchWeeklyRuns(t *testing.T) {
       "par_time_ms": 1500000,
       "completed_at": "2026-02-01T01:23:45Z"
     }
+  ],
+  "mythic_plus_scores_by_season": [
+    {
+      "scores": {
+        "all": 1320.9
+      }
+    }
   ]
 }`))
 	}))
@@ -36,7 +43,7 @@ func TestFetchWeeklyRuns(t *testing.T) {
 		HTTPClient: server.Client(),
 	})
 
-	runs, err := client.FetchWeeklyRuns(context.Background(), models.Character{
+	result, err := client.FetchWeeklyRuns(context.Background(), models.Character{
 		Region: "us",
 		Realm:  "illidan",
 		Name:   "Arthas",
@@ -44,16 +51,19 @@ func TestFetchWeeklyRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if len(runs) != 1 {
-		t.Fatalf("expected 1 run, got %d", len(runs))
+	if len(result.Keys) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(result.Keys))
 	}
-	if runs[0].KeyID != 12345 {
-		t.Fatalf("expected key id 12345, got %d", runs[0].KeyID)
+	if result.Keys[0].KeyID != 12345 {
+		t.Fatalf("expected key id 12345, got %d", result.Keys[0].KeyID)
 	}
-	if runs[0].Dungeon != "Mists of Tirna Scithe" {
-		t.Fatalf("expected dungeon to map, got %s", runs[0].Dungeon)
+	if result.Keys[0].Dungeon != "Mists of Tirna Scithe" {
+		t.Fatalf("expected dungeon to map, got %s", result.Keys[0].Dungeon)
 	}
-	if runs[0].Character != "arthas" {
-		t.Fatalf("expected character to map, got %s", runs[0].Character)
+	if result.Keys[0].Character != "arthas" {
+		t.Fatalf("expected character to map, got %s", result.Keys[0].Character)
+	}
+	if result.RIOScore != 1320.9 {
+		t.Fatalf("expected RIOScore 1320.9, got %f", result.RIOScore)
 	}
 }

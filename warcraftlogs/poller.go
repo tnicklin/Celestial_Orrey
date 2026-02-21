@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/tnicklin/celestial_orrey/clock"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
 )
@@ -21,6 +22,7 @@ type Poller interface {
 type DefaultPoller struct {
 	store       store.Store
 	client      WCL
+	clock       clock.Clock
 	interval    time.Duration
 	matchWindow time.Duration
 	stop        chan struct{}
@@ -31,6 +33,7 @@ type DefaultPoller struct {
 type PollerParams struct {
 	Store       store.Store
 	Client      WCL
+	Clock       clock.Clock
 	Interval    time.Duration
 	MatchWindow time.Duration
 }
@@ -47,9 +50,15 @@ func NewPoller(p PollerParams) *DefaultPoller {
 		matchWindow = 24 * time.Hour
 	}
 
+	clk := p.Clock
+	if clk == nil {
+		clk = clock.System()
+	}
+
 	return &DefaultPoller{
 		store:       p.Store,
 		client:      p.Client,
+		clock:       clk,
 		interval:    interval,
 		matchWindow: matchWindow,
 	}
@@ -99,8 +108,9 @@ func (p *DefaultPoller) run(ctx context.Context) {
 }
 
 func (p *DefaultPoller) pollOnce(ctx context.Context) {
-	cutoff := timeutil.WeeklyReset()
-	matchWindow := time.Since(cutoff) + 24*time.Hour
+	now := p.clock.Now()
+	cutoff := timeutil.WeeklyResetAt(now)
+	matchWindow := now.Sub(cutoff) + 24*time.Hour
 
 	keys, err := p.store.ListUnlinkedKeysSince(ctx, cutoff)
 	if err != nil || len(keys) == 0 {

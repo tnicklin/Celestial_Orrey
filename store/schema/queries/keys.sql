@@ -47,11 +47,15 @@ JOIN characters c ON c.id = k.character_id
 WHERE k.completed_at > ?
 ORDER BY k.completed_at DESC;
 
+-- name: UpdateCharacterScore :exec
+UPDATE characters SET rio_score = ?
+WHERE LOWER(name) = LOWER(?) AND LOWER(realm) = LOWER(?) AND LOWER(region) = LOWER(?);
+
 -- name: ListCharacters :many
-SELECT region, realm, name FROM characters ORDER BY region, realm, name;
+SELECT region, realm, name, rio_score FROM characters ORDER BY region, realm, name;
 
 -- name: GetCharacter :one
-SELECT id, region, realm, name FROM characters
+SELECT id, region, realm, name, rio_score FROM characters
 WHERE LOWER(name) = LOWER(?) AND LOWER(realm) = LOWER(?) AND LOWER(region) = LOWER(?);
 
 -- name: GetCharacterID :one

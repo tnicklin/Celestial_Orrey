@@ -15,6 +15,7 @@ type Querier interface {
 	DeleteWarcraftLogsLinksByCharacter(ctx context.Context, id int64) error
 	GetCharacter(ctx context.Context, arg GetCharacterParams) (Character, error)
 	GetCharacterID(ctx context.Context, arg GetCharacterIDParams) (int64, error)
+	GetElvUIVersion(ctx context.Context) (GetElvUIVersionRow, error)
 	InsertCompletedKey(ctx context.Context, arg InsertCompletedKeyParams) error
 	InsertWarcraftLogsLink(ctx context.Context, arg InsertWarcraftLogsLinkParams) error
 	ListAllKeysWithCharacters(ctx context.Context) ([]ListAllKeysWithCharactersRow, error)
@@ -23,7 +24,9 @@ type Querier interface {
 	ListKeysSince(ctx context.Context, completedAt string) ([]ListKeysSinceRow, error)
 	ListUnlinkedKeysSince(ctx context.Context, completedAt string) ([]ListUnlinkedKeysSinceRow, error)
 	ListWarcraftLogsLinksForKey(ctx context.Context, keyID int64) ([]ListWarcraftLogsLinksForKeyRow, error)
+	UpdateCharacterScore(ctx context.Context, arg UpdateCharacterScoreParams) error
 	UpsertCharacter(ctx context.Context, arg UpsertCharacterParams) (int64, error)
+	UpsertElvUIVersion(ctx context.Context, arg UpsertElvUIVersionParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -23,6 +23,14 @@ type WarcraftLogsLink struct {
 	InsertedAt string
 }
 
+type ElvUIVersion struct {
+	Version      string
+	DownloadURL  string
+	ChangelogURL string
+	LastUpdate   string
+	CheckedAt    string
+}
+
 type Store interface {
 	Open(ctx context.Context) error
 	Close() error
@@ -33,7 +41,11 @@ type Store interface {
 
 	UpsertCompletedKey(ctx context.Context, key models.CompletedKey) error
 	UpsertWarcraftLogsLink(ctx context.Context, link WarcraftLogsLink) error
+	UpdateCharacterScore(ctx context.Context, name, realm, region string, score float64) error
 	DeleteCharacter(ctx context.Context, name, realm, region string) error
+
+	UpsertElvUIVersion(ctx context.Context, v ElvUIVersion) error
+	GetElvUIVersion(ctx context.Context) (*ElvUIVersion, error)
 
 	ListCharacters(ctx context.Context) ([]models.Character, error)
 	GetCharacter(ctx context.Context, name, realm, region string) (*models.Character, error)

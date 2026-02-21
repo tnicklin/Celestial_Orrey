@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tnicklin/celestial_orrey/clock"
 	"github.com/tnicklin/celestial_orrey/models"
 	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
 	"github.com/tnicklin/celestial_orrey/store"
@@ -21,6 +22,7 @@ type DefaultPoller struct {
 	client        rioClient.Client
 	store         store.Store
 	wclLinker     *warcraftlogs.Linker
+	clock         clock.Clock
 	interval      time.Duration
 	maxConcurrent int
 	rng           *rand.Rand
@@ -37,6 +39,7 @@ type Params struct {
 	Client    rioClient.Client
 	Store     store.Store
 	WCLLinker *warcraftlogs.Linker
+	Clock     clock.Clock
 }
 
 // New creates a new DefaultPoller with the given parameters.
@@ -52,10 +55,16 @@ func New(p Params) *DefaultPoller {
 		})
 	}
 
+	clk := p.Clock
+	if clk == nil {
+		clk = clock.System()
+	}
+
 	return &DefaultPoller{
 		client:        client,
 		store:         p.Store,
 		wclLinker:     p.WCLLinker,
+		clock:         clk,
 		interval:      p.Config.PollInterval,
 		maxConcurrent: p.Config.MaxConcurrent,
 		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -141,6 +150,7 @@ func (p *DefaultPoller) pollAllCharacters(ctx context.Context) {
 
 func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Character) {
 	charKey := character.Key()
+	now := p.clock.Now()
 
 	p.mu.Lock()
 	known, ok := p.known[charKey]
@@ -148,7 +158,7 @@ func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Char
 		known = make(map[string]struct{})
 		p.known[charKey] = known
 
-		cutoff := timeutil.WeeklyReset()
+		cutoff := timeutil.WeeklyResetAt(now)
 		existingKeys, err := p.store.ListKeysByCharacterSince(ctx, character.Name, cutoff)
 		if err == nil {
 			for _, key := range existingKeys {
@@ -158,13 +168,16 @@ func (p *DefaultPoller) pollCharacter(ctx context.Context, character models.Char
 	}
 	p.mu.Unlock()
 
-	keys, err := p.client.FetchWeeklyRuns(ctx, character)
+	result, err := p.client.FetchWeeklyRuns(ctx, character)
 	if err != nil {
 		return
 	}
 
-	cutoff := timeutil.WeeklyReset()
-	for _, key := range keys {
+	// Update character's RIO score
+	_ = p.store.UpdateCharacterScore(ctx, character.Name, character.Realm, character.Region, result.RIOScore)
+
+	cutoff := timeutil.WeeklyResetAt(now)
+	for _, key := range result.Keys {
 		if !afterCutoff(key.CompletedAt, cutoff) {
 			continue
 		}
