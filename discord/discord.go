@@ -171,11 +171,13 @@ func (c *DefaultDiscord) postDailyAnnouncement(now time.Time) {
 }
 
 const (
-	_cmdKeys   = "keys"
-	_cmdReport = "report"
-	_cmdChar   = "char"
-	_cmdElv    = "elv"
-	_cmdHelp   = "help"
+	_cmdKeys        = "keys"
+	_cmdKeysAlias   = "keys-a"
+	_cmdReport      = "report"
+	_cmdReportAlias = "report-a"
+	_cmdChar        = "char"
+	_cmdElv         = "elv"
+	_cmdHelp        = "help"
 )
 
 const (
@@ -221,8 +223,12 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	switch cmd {
 	case _cmdKeys:
 		resp, err = c.cmdKeys(ctx, args)
+	case _cmdKeysAlias:
+		resp, err = c.cmdKeysAlias(ctx, args)
 	case _cmdReport:
 		resp, err = c.cmdReport(ctx, args)
+	case _cmdReportAlias:
+		resp, err = c.cmdReportAlias(ctx, args)
 	case _cmdChar:
 		var s string
 		s, err = c.cmdChar(ctx, args)
@@ -270,6 +276,33 @@ func (c *DefaultDiscord) cmdKeys(ctx context.Context, args []string) (cmdRespons
 	}
 
 	return c.formatCharacterKeys(ctx, args[0], resetTime)
+}
+
+func (c *DefaultDiscord) cmdKeysAlias(ctx context.Context, args []string) (cmdResponse, error) {
+	if c.store == nil {
+		return cmdResponse{}, errors.New("database not configured")
+	}
+	if len(args) == 0 {
+		return cmdResponse{content: "Usage: `!keys-a <alias_name>`\nExample: `!keys-a askr`"}, nil
+	}
+
+	chars, msg, err := c.resolveAliasCharacters(ctx, args[0])
+	if err != nil {
+		return cmdResponse{}, err
+	}
+	if msg != "" {
+		return cmdResponse{content: msg}, nil
+	}
+
+	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
+	return c.formatCharacterGroupKeys(
+		ctx,
+		fmt.Sprintf("Keys for alias %s", args[0]),
+		fmt.Sprintf("Week of %s", resetTime.Format("Jan 2")),
+		fmt.Sprintf("No keys found for alias **%s** this week.", args[0]),
+		chars,
+		resetTime,
+	)
 }
 
 func (c *DefaultDiscord) formatCharacterKeys(ctx context.Context, query string, since time.Time) (cmdResponse, error) {
@@ -348,18 +381,44 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 		return cmdResponse{}, err
 	}
 
+	return c.formatCharacterGroupKeys(
+		ctx,
+		"Keys since reset",
+		fmt.Sprintf("Week of %s", since.Format("Jan 2")),
+		"No keys completed this week.",
+		allChars,
+		since,
+	)
+}
+
+func (c *DefaultDiscord) formatCharacterGroupKeys(
+	ctx context.Context,
+	title string,
+	description string,
+	emptyMessage string,
+	chars []models.Character,
+	since time.Time,
+) (cmdResponse, error) {
+	allChars := append([]models.Character(nil), chars...)
+
 	// Sort characters by name for deterministic output
 	sort.Slice(allChars, func(i, j int) bool {
+		if allChars[i].Name == allChars[j].Name {
+			if allChars[i].Realm == allChars[j].Realm {
+				return allChars[i].Region < allChars[j].Region
+			}
+			return allChars[i].Realm < allChars[j].Realm
+		}
 		return allChars[i].Name < allChars[j].Name
 	})
 
 	if len(allChars) == 0 {
-		return cmdResponse{content: "No characters in database."}, nil
+		return cmdResponse{content: emptyMessage}, nil
 	}
 
 	embed := &discordgo.MessageEmbed{
-		Title:       "Keys since reset",
-		Description: fmt.Sprintf("Week of %s", since.Format("Jan 2")),
+		Title:       title,
+		Description: description,
 		Color:       embedColor,
 	}
 
@@ -395,7 +454,7 @@ func (c *DefaultDiscord) formatAllCharacterKeys(ctx context.Context, since time.
 	}
 
 	if len(embed.Fields) == 0 {
-		return cmdResponse{content: "No keys completed this week."}, nil
+		return cmdResponse{content: emptyMessage}, nil
 	}
 
 	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
@@ -430,6 +489,32 @@ func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (cmdRespo
 	return c.formatAllCharactersReport(ctx, resetTime)
 }
 
+func (c *DefaultDiscord) cmdReportAlias(ctx context.Context, args []string) (cmdResponse, error) {
+	if c.store == nil {
+		return cmdResponse{}, errors.New("database not configured")
+	}
+	if len(args) == 0 {
+		return cmdResponse{content: "Usage: `!report-a <alias_name>`\nExample: `!report-a askr`"}, nil
+	}
+
+	chars, msg, err := c.resolveAliasCharacters(ctx, args[0])
+	if err != nil {
+		return cmdResponse{}, err
+	}
+	if msg != "" {
+		return cmdResponse{content: msg}, nil
+	}
+
+	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
+	return c.formatReportForCharacters(
+		ctx,
+		fmt.Sprintf("Great Vault Progress (%s)", args[0]),
+		fmt.Sprintf("No Great Vault data found for alias **%s**.", args[0]),
+		chars,
+		resetTime,
+	)
+}
+
 func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string, since time.Time) (cmdResponse, error) {
 	allChars, err := c.store.ListCharacters(ctx)
 	if err != nil {
@@ -452,13 +537,7 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
 
-	embed := &discordgo.MessageEmbed{
-		Title:       "Great Vault Progress",
-		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, matchingChars, since)),
-		Color:       embedColor,
-	}
-
-	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
+	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No Great Vault data available.", matchingChars, since)
 }
 
 func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since time.Time) (cmdResponse, error) {
@@ -467,16 +546,34 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		return cmdResponse{}, err
 	}
 
+	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No characters in database.", allChars, since)
+}
+
+func (c *DefaultDiscord) formatReportForCharacters(
+	ctx context.Context,
+	title string,
+	emptyMessage string,
+	chars []models.Character,
+	since time.Time,
+) (cmdResponse, error) {
+	allChars := append([]models.Character(nil), chars...)
+
 	sort.Slice(allChars, func(i, j int) bool {
+		if allChars[i].Name == allChars[j].Name {
+			if allChars[i].Realm == allChars[j].Realm {
+				return allChars[i].Region < allChars[j].Region
+			}
+			return allChars[i].Realm < allChars[j].Realm
+		}
 		return allChars[i].Name < allChars[j].Name
 	})
 
 	if len(allChars) == 0 {
-		return cmdResponse{content: "No characters in database."}, nil
+		return cmdResponse{content: emptyMessage}, nil
 	}
 
 	embed := &discordgo.MessageEmbed{
-		Title:       "Great Vault Progress",
+		Title:       title,
 		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, allChars, since)),
 		Color:       embedColor,
 	}
@@ -593,24 +690,33 @@ func (c *DefaultDiscord) cmdHelp() string {
 ` + "```" + `
 !keys <name>               - Show keys for a character
 !keys all                  - Show all keys completed this week
+!keys-a <alias>            - Show keys for all characters in an alias
 !report                    - Show Great Vault progress for all characters
 !report <name>             - Show Great Vault progress for a character
+!report-a <alias>          - Show Great Vault progress for an alias
 !char sync <name> <realm>  - Sync character from RaiderIO
 !char purge <name> <realm> - Remove character from database
+!char alias set <alias> <characters...>
+!char alias add <alias> <characters...>
+!char alias remove <alias> <characters...>
 !elv                       - Show current ElvUI version
 !help                      - Show this help message
 ` + "```"
 }
 
 const (
-	_cmdSync  = "sync"
-	_cmdPurge = "purge"
+	_cmdSync   = "sync"
+	_cmdPurge  = "purge"
+	_cmdAlias  = "alias"
+	_cmdSet    = "set"
+	_cmdAdd    = "add"
+	_cmdRemove = "remove"
 )
 
 // cmdChar handles character management commands.
 func (c *DefaultDiscord) cmdChar(ctx context.Context, args []string) (string, error) {
 	if len(args) < 1 {
-		return "Usage: `!char sync <name> <realm>` or `!char purge <name> <realm>`", nil
+		return "Usage: `!char sync <name> <realm>`, `!char purge <name> <realm>`, or `!char alias <set|add|remove> <alias> <characters...>`", nil
 	}
 
 	subCmd := strings.ToLower(args[0])
@@ -621,8 +727,69 @@ func (c *DefaultDiscord) cmdChar(ctx context.Context, args []string) (string, er
 		return c.cmdCharSync(ctx, subArgs)
 	case _cmdPurge:
 		return c.cmdCharPurge(ctx, subArgs)
+	case _cmdAlias:
+		return c.cmdCharAlias(ctx, subArgs)
 	default:
-		return "Unknown subcommand. Use `sync` or `purge`.", nil
+		return "Unknown subcommand. Use `sync`, `purge`, or `alias`.", nil
+	}
+}
+
+func (c *DefaultDiscord) cmdCharAlias(ctx context.Context, args []string) (string, error) {
+	if c.store == nil {
+		return "", errors.New("database not configured")
+	}
+	if len(args) < 3 {
+		return "Usage: `!char alias <set|add|remove> <alias_name> <character names...>`\nExamples: `!char alias set askr askrm xtein` or `!char alias add askr askrm-malganis`", nil
+	}
+
+	action := strings.ToLower(args[0])
+	aliasName := args[1]
+	memberInputs := args[2:]
+
+	members, msg, err := c.resolveAliasMemberInputs(ctx, memberInputs)
+	if err != nil {
+		return "", err
+	}
+	if msg != "" {
+		return msg, nil
+	}
+
+	switch action {
+	case _cmdSet:
+		if err := c.store.SetAliasCharacters(ctx, aliasName, members); err != nil {
+			return "", fmt.Errorf("set alias members: %w", err)
+		}
+		return fmt.Sprintf("Alias **%s** now contains: %s", aliasName, formatCharacterList(members)), nil
+	case _cmdAdd:
+		if err := c.store.AddAliasCharacters(ctx, aliasName, members); err != nil {
+			return "", fmt.Errorf("add alias members: %w", err)
+		}
+		chars, err := c.store.ListAliasCharacters(ctx, aliasName)
+		if err != nil {
+			return "", fmt.Errorf("list alias members: %w", err)
+		}
+		return fmt.Sprintf("Added to alias **%s**. Current members: %s", aliasName, formatCharacterList(chars)), nil
+	case _cmdRemove:
+		existing, err := c.store.ListAliasCharacters(ctx, aliasName)
+		if err != nil {
+			return "", fmt.Errorf("list alias members: %w", err)
+		}
+		if len(existing) == 0 {
+			return fmt.Sprintf("No alias found matching **%s**.", aliasName), nil
+		}
+		if err := c.store.RemoveAliasCharacters(ctx, aliasName, members); err != nil {
+			return "", fmt.Errorf("remove alias members: %w", err)
+		}
+		remaining, err := c.store.ListAliasCharacters(ctx, aliasName)
+		if err != nil {
+			return "", fmt.Errorf("list alias members: %w", err)
+		}
+		if len(remaining) == 0 {
+			return fmt.Sprintf("Removed members from alias **%s**. The alias is now empty and has been deleted.", aliasName), nil
+		}
+		return fmt.Sprintf("Removed from alias **%s**. Remaining members: %s", aliasName, formatCharacterList(remaining)), nil
+	default:
+		return "Unknown alias subcommand. Use `set`, `add`, or `remove`.", nil
 	}
 }
 
@@ -727,6 +894,106 @@ func (c *DefaultDiscord) cmdCharPurge(ctx context.Context, args []string) (strin
 	}
 
 	return fmt.Sprintf("Purged **%s** (%s-%s) and all associated data from database.", name, realm, region), nil
+}
+
+func (c *DefaultDiscord) resolveAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, string, error) {
+	chars, err := c.store.ListAliasCharacters(ctx, aliasName)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(chars) == 0 {
+		return nil, fmt.Sprintf("No alias found matching **%s**.", aliasName), nil
+	}
+	return chars, "", nil
+}
+
+func (c *DefaultDiscord) resolveAliasMemberInputs(ctx context.Context, inputs []string) ([]models.Character, string, error) {
+	resolved := make([]models.Character, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+
+	for _, input := range inputs {
+		char, msg, err := c.resolveAliasMemberInput(ctx, input)
+		if err != nil {
+			return nil, "", err
+		}
+		if msg != "" {
+			return nil, msg, nil
+		}
+		if _, ok := seen[char.Key()]; ok {
+			continue
+		}
+		seen[char.Key()] = struct{}{}
+		resolved = append(resolved, char)
+	}
+
+	return resolved, "", nil
+}
+
+func (c *DefaultDiscord) resolveAliasMemberInput(ctx context.Context, input string) (models.Character, string, error) {
+	allChars, err := c.store.ListCharacters(ctx)
+	if err != nil {
+		return models.Character{}, "", err
+	}
+
+	query := strings.ToLower(strings.TrimSpace(input))
+	if query == "" {
+		return models.Character{}, "Character name cannot be empty.", nil
+	}
+
+	if name, realm, ok := splitCharacterQuery(query); ok {
+		for _, char := range allChars {
+			if strings.EqualFold(char.Name, name) && strings.EqualFold(char.Realm, realm) {
+				return char, "", nil
+			}
+		}
+		return models.Character{}, fmt.Sprintf("No character found matching **%s**.", input), nil
+	}
+
+	var matches []models.Character
+	for _, char := range allChars {
+		if strings.EqualFold(char.Name, query) {
+			matches = append(matches, char)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return models.Character{}, fmt.Sprintf("No character found matching **%s**.", input), nil
+	case 1:
+		return matches[0], "", nil
+	default:
+		realms := make([]string, 0, len(matches))
+		for _, char := range matches {
+			realms = append(realms, char.Realm)
+		}
+		sort.Strings(realms)
+		return models.Character{}, fmt.Sprintf(
+			"Ambiguous character name **%s** found on multiple realms: %s\nPlease use `name-realm` to specify.",
+			input,
+			strings.Join(realms, ", "),
+		), nil
+	}
+}
+
+func splitCharacterQuery(query string) (name string, realm string, ok bool) {
+	name, realm, ok = strings.Cut(query, "-")
+	if !ok || name == "" || realm == "" {
+		return "", "", false
+	}
+	return name, realm, true
+}
+
+func formatCharacterList(chars []models.Character) string {
+	if len(chars) == 0 {
+		return "(none)"
+	}
+
+	display := make([]string, 0, len(chars))
+	for _, char := range chars {
+		display = append(display, fmt.Sprintf("%s-%s", char.Name, char.Realm))
+	}
+	sort.Strings(display)
+	return strings.Join(display, ", ")
 }
 
 func formatShortTime(completedAt string) string {

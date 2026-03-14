@@ -16,6 +16,16 @@ type Character struct {
 	RioScore float64 `json:"rio_score"`
 }
 
+type CharacterAlias struct {
+	ID        int64  `json:"id"`
+	AliasName string `json:"alias_name"`
+}
+
+type CharacterAliasMember struct {
+	AliasID     int64 `json:"alias_id"`
+	CharacterID int64 `json:"character_id"`
+}
+
 type CompletedKey struct {
 	KeyID       int64  `json:"key_id"`
 	CharacterID int64  `json:"character_id"`

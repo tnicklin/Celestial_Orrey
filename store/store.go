@@ -47,6 +47,11 @@ type Store interface {
 	UpsertElvUIVersion(ctx context.Context, v ElvUIVersion) error
 	GetElvUIVersion(ctx context.Context) (*ElvUIVersion, error)
 
+	SetAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
+	AddAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
+	RemoveAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
+	ListAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, error)
+
 	ListCharacters(ctx context.Context) ([]models.Character, error)
 	GetCharacter(ctx context.Context, name, realm, region string) (*models.Character, error)
 	CountKeysByCharacterSince(ctx context.Context, cutoff time.Time) ([]CountRow, error)

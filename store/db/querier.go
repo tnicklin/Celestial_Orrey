@@ -9,15 +9,22 @@ import (
 )
 
 type Querier interface {
+	CountCharacterAliasMembers(ctx context.Context, aliasID int64) (int64, error)
 	CountKeysByCharacterSince(ctx context.Context, completedAt string) ([]CountKeysByCharacterSinceRow, error)
 	DeleteCharacter(ctx context.Context, id int64) error
+	DeleteCharacterAlias(ctx context.Context, id int64) error
+	DeleteCharacterAliasMember(ctx context.Context, arg DeleteCharacterAliasMemberParams) error
+	DeleteCharacterAliasMembers(ctx context.Context, aliasID int64) error
 	DeleteCompletedKeysByCharacter(ctx context.Context, characterID int64) error
 	DeleteWarcraftLogsLinksByCharacter(ctx context.Context, id int64) error
 	GetCharacter(ctx context.Context, arg GetCharacterParams) (Character, error)
+	GetCharacterAliasID(ctx context.Context, aliasName string) (int64, error)
 	GetCharacterID(ctx context.Context, arg GetCharacterIDParams) (int64, error)
 	GetElvUIVersion(ctx context.Context) (GetElvUIVersionRow, error)
+	InsertCharacterAliasMember(ctx context.Context, arg InsertCharacterAliasMemberParams) error
 	InsertCompletedKey(ctx context.Context, arg InsertCompletedKeyParams) error
 	InsertWarcraftLogsLink(ctx context.Context, arg InsertWarcraftLogsLinkParams) error
+	ListAliasCharacters(ctx context.Context, aliasName string) ([]ListAliasCharactersRow, error)
 	ListAllKeysWithCharacters(ctx context.Context) ([]ListAllKeysWithCharactersRow, error)
 	ListCharacters(ctx context.Context) ([]ListCharactersRow, error)
 	ListKeysByCharacterSince(ctx context.Context, arg ListKeysByCharacterSinceParams) ([]ListKeysByCharacterSinceRow, error)
@@ -26,6 +33,7 @@ type Querier interface {
 	ListWarcraftLogsLinksForKey(ctx context.Context, keyID int64) ([]ListWarcraftLogsLinksForKeyRow, error)
 	UpdateCharacterScore(ctx context.Context, arg UpdateCharacterScoreParams) error
 	UpsertCharacter(ctx context.Context, arg UpsertCharacterParams) (int64, error)
+	UpsertCharacterAlias(ctx context.Context, aliasName string) (int64, error)
 	UpsertElvUIVersion(ctx context.Context, arg UpsertElvUIVersionParams) error
 }
 

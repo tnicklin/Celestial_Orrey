@@ -122,3 +122,15 @@ func (f *fakeStore) UpsertElvUIVersion(ctx context.Context, v store.ElvUIVersion
 func (f *fakeStore) GetElvUIVersion(ctx context.Context) (*store.ElvUIVersion, error) {
 	return nil, nil
 }
+func (f *fakeStore) SetAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
+	return nil
+}
+func (f *fakeStore) AddAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
+	return nil
+}
+func (f *fakeStore) RemoveAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
+	return nil
+}
+func (f *fakeStore) ListAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, error) {
+	return nil, nil
+}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -352,6 +353,177 @@ func (s *SQLiteStore) CountKeysByCharacterSince(ctx context.Context, cutoff time
 			KeyCount: row.KeyCount,
 		})
 	}
+	return out, nil
+}
+
+func (s *SQLiteStore) SetAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	queries := db.New(tx)
+	aliasID, err := queries.UpsertCharacterAlias(ctx, normalizeAliasName(aliasName))
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := queries.DeleteCharacterAliasMembers(ctx, aliasID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	for _, char := range characters {
+		characterID, err := lookupCharacterID(ctx, queries, char)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := queries.InsertCharacterAliasMember(ctx, db.InsertCharacterAliasMemberParams{
+			AliasID:     aliasID,
+			CharacterID: characterID,
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	if err := deleteAliasIfEmpty(ctx, queries, aliasID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
+}
+
+func (s *SQLiteStore) AddAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	queries := db.New(tx)
+	aliasID, err := queries.UpsertCharacterAlias(ctx, normalizeAliasName(aliasName))
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	for _, char := range characters {
+		characterID, err := lookupCharacterID(ctx, queries, char)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := queries.InsertCharacterAliasMember(ctx, db.InsertCharacterAliasMemberParams{
+			AliasID:     aliasID,
+			CharacterID: characterID,
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
+}
+
+func (s *SQLiteStore) RemoveAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	queries := db.New(tx)
+	aliasID, err := queries.GetCharacterAliasID(ctx, normalizeAliasName(aliasName))
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	for _, char := range characters {
+		characterID, err := lookupCharacterID(ctx, queries, char)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := queries.DeleteCharacterAliasMember(ctx, db.DeleteCharacterAliasMemberParams{
+			AliasID:     aliasID,
+			CharacterID: characterID,
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	if err := deleteAliasIfEmpty(ctx, queries, aliasID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
+}
+
+func (s *SQLiteStore) ListAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.db == nil {
+		return nil, errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	rows, err := queries.ListAliasCharacters(ctx, normalizeAliasName(aliasName))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]models.Character, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, models.Character{
+			Region:   row.Region,
+			Realm:    row.Realm,
+			Name:     row.Name,
+			RIOScore: row.RioScore,
+		})
+	}
+
 	return out, nil
 }
 
@@ -777,9 +949,17 @@ func (s *SQLiteStore) applyMigrations(ctx context.Context) error {
 }
 
 func resolveMigrationsPath() (string, error) {
+	if _, thisFile, _, ok := runtime.Caller(0); ok {
+		candidate := filepath.Join(filepath.Dir(thisFile), "schema", "migrations")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate, nil
+		}
+	}
+
 	paths := []string{
 		filepath.Join("schema", "migrations"),
 		filepath.Join("store", "schema", "migrations"),
+		filepath.Join("..", "store", "schema", "migrations"),
 	}
 	for _, path := range paths {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
@@ -805,4 +985,27 @@ func syntheticKeyID(key models.CompletedKey) int64 {
 		return 1
 	}
 	return value
+}
+
+func normalizeAliasName(aliasName string) string {
+	return strings.ToLower(strings.TrimSpace(aliasName))
+}
+
+func lookupCharacterID(ctx context.Context, queries db.Querier, char models.Character) (int64, error) {
+	return queries.GetCharacterID(ctx, db.GetCharacterIDParams{
+		LOWER:   strings.ToLower(strings.TrimSpace(char.Name)),
+		LOWER_2: strings.ToLower(strings.TrimSpace(char.Realm)),
+		LOWER_3: strings.ToLower(strings.TrimSpace(char.Region)),
+	})
+}
+
+func deleteAliasIfEmpty(ctx context.Context, queries db.Querier, aliasID int64) error {
+	memberCount, err := queries.CountCharacterAliasMembers(ctx, aliasID)
+	if err != nil {
+		return err
+	}
+	if memberCount == 0 {
+		return queries.DeleteCharacterAlias(ctx, aliasID)
+	}
+	return nil
 }
