@@ -771,20 +771,37 @@ func (c *DefaultDiscord) cmdElv(ctx context.Context) (cmdResponse, error) {
 func (c *DefaultDiscord) cmdHelp() string {
 	return `**Available Commands:**
 ` + "```" + `
-!keys <name>               - Show keys for a character
-!keys all                  - Show all keys completed this week
-!keys-a <alias>            - Show keys for all characters in an alias
-!report                    - Show Great Vault progress for all characters
-!report <name>             - Show Great Vault progress for a character
-!report-a <alias>          - Show Great Vault progress for an alias
-!scores                    - Show the alias score leaderboard
-!char sync <name> <realm>  - Sync character from RaiderIO
-!char purge <name> <realm> - Remove character from database
-!char alias set <alias> <characters...>
-!char alias add <alias> <characters...>
-!char alias remove <alias> <characters...>
-!elv                       - Show current ElvUI version
-!help                      - Show this help message
+SETUP
+  1. Sync characters into the bot:
+     !char sync <name> <realm>
+  2. Create an alias with those characters:
+     !char alias set <alias> <character names...>
+  3. Add more characters later if needed:
+     !char alias add <alias> <character names...>
+  4. Use the alias in reports:
+     !scores
+     !keys-a <alias>
+     !report-a <alias>
+
+REPORTS
+  !scores                    - Show the alias score leaderboard
+  !keys <name>               - Show keys for a character
+  !keys all                  - Show all keys completed this week
+  !keys-a <alias>            - Show keys for all characters in an alias
+  !report                    - Show Great Vault progress for all characters
+  !report <name>             - Show Great Vault progress for a character
+  !report-a <alias>          - Show Great Vault progress for an alias
+
+MANAGEMENT
+  !char sync <name> <realm>  - Sync character from RaiderIO
+  !char purge <name> <realm> - Remove character from database
+  !char alias set <alias> <characters...>
+  !char alias add <alias> <characters...>
+  !char alias remove <alias> <characters...>
+
+OTHER
+  !elv                       - Show current ElvUI version
+  !help                      - Show this help message
 ` + "```"
 }
 
