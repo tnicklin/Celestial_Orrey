@@ -175,6 +175,14 @@ func TestSQLiteStoreAliasCRUD(t *testing.T) {
 		t.Fatalf("set alias: %v", err)
 	}
 
+	aliases, err := st.ListAliases(ctx)
+	if err != nil {
+		t.Fatalf("list aliases after set: %v", err)
+	}
+	if len(aliases) != 1 || aliases[0] != "raidteam" {
+		t.Fatalf("expected one normalized alias name, got %#v", aliases)
+	}
+
 	chars, err := st.ListAliasCharacters(ctx, "raidteam")
 	if err != nil {
 		t.Fatalf("list alias after set: %v", err)
@@ -217,6 +225,14 @@ func TestSQLiteStoreAliasCRUD(t *testing.T) {
 	}
 	if len(chars) != 0 {
 		t.Fatalf("expected alias to be deleted when empty, got %#v", chars)
+	}
+
+	aliases, err = st.ListAliases(ctx)
+	if err != nil {
+		t.Fatalf("list aliases after delete: %v", err)
+	}
+	if len(aliases) != 0 {
+		t.Fatalf("expected no aliases after deleting last member, got %#v", aliases)
 	}
 }
 

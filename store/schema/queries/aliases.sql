@@ -29,6 +29,11 @@ WHERE alias_id = ?;
 DELETE FROM character_aliases
 WHERE id = ?;
 
+-- name: ListAliases :many
+SELECT alias_name
+FROM character_aliases
+ORDER BY alias_name;
+
 -- name: ListAliasCharacters :many
 SELECT c.region, c.realm, c.name, c.rio_score
 FROM character_alias_members am

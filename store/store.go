@@ -50,6 +50,7 @@ type Store interface {
 	SetAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
 	AddAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
 	RemoveAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
+	ListAliases(ctx context.Context) ([]string, error)
 	ListAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, error)
 
 	ListCharacters(ctx context.Context) ([]models.Character, error)

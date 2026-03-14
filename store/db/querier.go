@@ -25,6 +25,7 @@ type Querier interface {
 	InsertCompletedKey(ctx context.Context, arg InsertCompletedKeyParams) error
 	InsertWarcraftLogsLink(ctx context.Context, arg InsertWarcraftLogsLinkParams) error
 	ListAliasCharacters(ctx context.Context, aliasName string) ([]ListAliasCharactersRow, error)
+	ListAliases(ctx context.Context) ([]string, error)
 	ListAllKeysWithCharacters(ctx context.Context) ([]ListAllKeysWithCharactersRow, error)
 	ListCharacters(ctx context.Context) ([]ListCharactersRow, error)
 	ListKeysByCharacterSince(ctx context.Context, arg ListKeysByCharacterSinceParams) ([]ListKeysByCharacterSinceRow, error)

@@ -128,6 +128,35 @@ func (q *Queries) ListAliasCharacters(ctx context.Context, aliasName string) ([]
 	return items, nil
 }
 
+const listAliases = `-- name: ListAliases :many
+SELECT alias_name
+FROM character_aliases
+ORDER BY alias_name
+`
+
+func (q *Queries) ListAliases(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAliases)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var alias_name string
+		if err := rows.Scan(&alias_name); err != nil {
+			return nil, err
+		}
+		items = append(items, alias_name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertCharacterAlias = `-- name: UpsertCharacterAlias :one
 INSERT INTO character_aliases(alias_name)
 VALUES (?)

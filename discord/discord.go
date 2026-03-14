@@ -21,6 +21,11 @@ import (
 
 const commandPrefix = "!"
 
+const (
+	_dailyMorningAnnouncementHour = 7
+	_dailyEveningAnnouncementHour = 19
+)
+
 // embedColor is the Mythic+ themed purple used for all embeds.
 const embedColor = 0x9B59B6
 
@@ -121,15 +126,11 @@ func (c *DefaultDiscord) runScheduler() {
 		case <-c.stopScheduler:
 			return
 		case <-ticker.C:
-			now := c.clock.Now()
-			pstNow := now.In(_pstLocation)
-
-			if pstNow.Hour() == 7 && pstNow.Minute() == 0 {
-				today := time.Date(pstNow.Year(), pstNow.Month(), pstNow.Day(), 7, 0, 0, 0, _pstLocation)
-				if !today.Equal(lastPost) {
-					lastPost = today
-					c.postDailyAnnouncement(pstNow)
-				}
+			now := c.clock.Now().In(_pstLocation)
+			scheduledAt, ok := scheduledAnnouncementTime(now)
+			if ok && !scheduledAt.Equal(lastPost) {
+				lastPost = scheduledAt
+				c.postDailyAnnouncement(scheduledAt)
 			}
 		}
 	}
@@ -137,35 +138,24 @@ func (c *DefaultDiscord) runScheduler() {
 
 func (c *DefaultDiscord) postDailyAnnouncement(now time.Time) {
 	ctx := context.Background()
+	responses, postResetMessage, err := c.buildDailyAnnouncementResponses(ctx, now)
+	if err != nil {
+		c.logger.ErrorW("generate daily announcement", "error", err)
+		return
+	}
 
-	if now.Weekday() == time.Tuesday {
+	for _, resp := range responses {
+		if err := c.sendCmdResponse(c.listenChannel, resp); err != nil {
+			c.logger.ErrorW("post daily report", "error", err)
+		}
+	}
+
+	if postResetMessage {
 		if err := c.store.ArchiveWeek(ctx); err != nil {
 			c.logger.ErrorW("archive week", "error", err)
 		}
-
-		msg := "**Dawn of the 1st Day**"
-		if err := c.WriteMessage(c.listenChannel, msg); err != nil {
+		if err := c.WriteMessage(c.listenChannel, "**Dawn of the 1st Day**"); err != nil {
 			c.logger.ErrorW("post reset message", "error", err)
-		}
-		return
-	}
-
-	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
-	resp, err := c.formatAllCharactersReport(ctx, resetTime)
-	if err != nil {
-		c.logger.ErrorW("generate report", "error", err)
-		return
-	}
-
-	if len(resp.embeds) > 0 {
-		if _, err := c.session.ChannelMessageSendComplex(c.listenChannel, &discordgo.MessageSend{
-			Embeds: resp.embeds,
-		}); err != nil {
-			c.logger.ErrorW("post daily report", "error", err)
-		}
-	} else if resp.content != "" {
-		if err := c.WriteMessage(c.listenChannel, resp.content); err != nil {
-			c.logger.ErrorW("post daily report", "error", err)
 		}
 	}
 }
@@ -175,6 +165,7 @@ const (
 	_cmdKeysAlias   = "keys-a"
 	_cmdReport      = "report"
 	_cmdReportAlias = "report-a"
+	_cmdScores      = "scores"
 	_cmdChar        = "char"
 	_cmdElv         = "elv"
 	_cmdHelp        = "help"
@@ -229,6 +220,8 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		resp, err = c.cmdReport(ctx, args)
 	case _cmdReportAlias:
 		resp, err = c.cmdReportAlias(ctx, args)
+	case _cmdScores:
+		resp, err = c.cmdScores(ctx, args)
 	case _cmdChar:
 		var s string
 		s, err = c.cmdChar(ctx, args)
@@ -489,6 +482,13 @@ func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (cmdRespo
 	return c.formatAllCharactersReport(ctx, resetTime)
 }
 
+func (c *DefaultDiscord) cmdScores(ctx context.Context, args []string) (cmdResponse, error) {
+	if len(args) > 0 {
+		return cmdResponse{content: "Usage: `!scores`"}, nil
+	}
+	return c.formatAliasScoreLeaderboard(ctx)
+}
+
 func (c *DefaultDiscord) cmdReportAlias(ctx context.Context, args []string) (cmdResponse, error) {
 	if c.store == nil {
 		return cmdResponse{}, errors.New("database not configured")
@@ -575,6 +575,89 @@ func (c *DefaultDiscord) formatReportForCharacters(
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
 		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, allChars, since)),
+		Color:       embedColor,
+	}
+
+	return cmdResponse{embeds: []*discordgo.MessageEmbed{embed}}, nil
+}
+
+func (c *DefaultDiscord) formatAliasScoreLeaderboard(ctx context.Context) (cmdResponse, error) {
+	if c.store == nil {
+		return cmdResponse{}, errors.New("database not configured")
+	}
+
+	aliases, err := c.store.ListAliases(ctx)
+	if err != nil {
+		return cmdResponse{}, err
+	}
+
+	type aliasScoreEntry struct {
+		alias     string
+		score     float64
+		character string
+	}
+
+	var entries []aliasScoreEntry
+	aliasWidth := len("Alias")
+	scoreWidth := len("Score")
+
+	for _, alias := range aliases {
+		chars, err := c.store.ListAliasCharacters(ctx, alias)
+		if err != nil {
+			return cmdResponse{}, err
+		}
+
+		best, ok := highestScoreCharacter(chars)
+		if !ok {
+			continue
+		}
+
+		scoreText := fmt.Sprintf("%.1f", best.RIOScore)
+		if len(alias) > aliasWidth {
+			aliasWidth = len(alias)
+		}
+		if len(scoreText) > scoreWidth {
+			scoreWidth = len(scoreText)
+		}
+
+		entries = append(entries, aliasScoreEntry{
+			alias:     alias,
+			score:     best.RIOScore,
+			character: best.Name,
+		})
+	}
+
+	if len(entries) == 0 {
+		return cmdResponse{content: "No alias scores available yet."}, nil
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].score == entries[j].score {
+			return entries[i].alias < entries[j].alias
+		}
+		return entries[i].score > entries[j].score
+	})
+
+	rankWidth := len(fmt.Sprintf("%d", len(entries)))
+	var sb strings.Builder
+	sb.WriteString("```\n")
+	for i, entry := range entries {
+		sb.WriteString(fmt.Sprintf(
+			"%*d. %-*s %*s (%s)\n",
+			rankWidth,
+			i+1,
+			aliasWidth,
+			entry.alias,
+			scoreWidth,
+			fmt.Sprintf("%.1f", entry.score),
+			entry.character,
+		))
+	}
+	sb.WriteString("```")
+
+	embed := &discordgo.MessageEmbed{
+		Title:       "Season Score Leaderboard",
+		Description: "Highest RaiderIO score per alias\n" + sb.String(),
 		Color:       embedColor,
 	}
 
@@ -694,6 +777,7 @@ func (c *DefaultDiscord) cmdHelp() string {
 !report                    - Show Great Vault progress for all characters
 !report <name>             - Show Great Vault progress for a character
 !report-a <alias>          - Show Great Vault progress for an alias
+!scores                    - Show the alias score leaderboard
 !char sync <name> <realm>  - Sync character from RaiderIO
 !char purge <name> <realm> - Remove character from database
 !char alias set <alias> <characters...>
@@ -994,6 +1078,85 @@ func formatCharacterList(chars []models.Character) string {
 	}
 	sort.Strings(display)
 	return strings.Join(display, ", ")
+}
+
+func (c *DefaultDiscord) buildDailyAnnouncementResponses(ctx context.Context, now time.Time) ([]cmdResponse, bool, error) {
+	scoreResp, err := c.formatAliasScoreLeaderboard(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	reportResp, err := c.formatAllCharactersReport(ctx, announcementReportCutoff(now))
+	if err != nil {
+		return nil, false, err
+	}
+
+	return []cmdResponse{scoreResp, reportResp}, shouldPostResetMessage(now), nil
+}
+
+func (c *DefaultDiscord) sendCmdResponse(channelID string, resp cmdResponse) error {
+	if len(resp.embeds) > 0 {
+		_, err := c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Embeds: resp.embeds,
+		})
+		return err
+	}
+	if resp.content != "" {
+		return c.WriteMessage(channelID, resp.content)
+	}
+	return nil
+}
+
+func scheduledAnnouncementTime(now time.Time) (time.Time, bool) {
+	localNow := now.In(_pstLocation)
+	if localNow.Minute() != 0 {
+		return time.Time{}, false
+	}
+	if localNow.Hour() != _dailyMorningAnnouncementHour && localNow.Hour() != _dailyEveningAnnouncementHour {
+		return time.Time{}, false
+	}
+	return time.Date(
+		localNow.Year(),
+		localNow.Month(),
+		localNow.Day(),
+		localNow.Hour(),
+		0,
+		0,
+		0,
+		_pstLocation,
+	), true
+}
+
+func announcementReportCutoff(now time.Time) time.Time {
+	if shouldPostResetMessage(now) {
+		return timeutil.WeeklyResetAt(now.Add(-1 * time.Minute))
+	}
+	return timeutil.WeeklyResetAt(now)
+}
+
+func shouldPostResetMessage(now time.Time) bool {
+	localNow := now.In(_pstLocation)
+	return localNow.Weekday() == time.Tuesday && localNow.Hour() == _dailyMorningAnnouncementHour
+}
+
+func highestScoreCharacter(chars []models.Character) (models.Character, bool) {
+	var best models.Character
+	found := false
+	for _, char := range chars {
+		if char.RIOScore <= 0 {
+			continue
+		}
+		if !found || char.RIOScore > best.RIOScore ||
+			(char.RIOScore == best.RIOScore && characterDisplayKey(char) < characterDisplayKey(best)) {
+			best = char
+			found = true
+		}
+	}
+	return best, found
+}
+
+func characterDisplayKey(char models.Character) string {
+	return strings.ToLower(fmt.Sprintf("%s-%s-%s", char.Name, char.Realm, char.Region))
 }
 
 func formatShortTime(completedAt string) string {

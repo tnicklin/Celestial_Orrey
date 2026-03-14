@@ -131,6 +131,9 @@ func (f *fakeStore) AddAliasCharacters(ctx context.Context, aliasName string, ch
 func (f *fakeStore) RemoveAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error {
 	return nil
 }
+func (f *fakeStore) ListAliases(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
 func (f *fakeStore) ListAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, error) {
 	return nil, nil
 }

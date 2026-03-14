@@ -500,6 +500,18 @@ func (s *SQLiteStore) RemoveAliasCharacters(ctx context.Context, aliasName strin
 	return nil
 }
 
+func (s *SQLiteStore) ListAliases(ctx context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.db == nil {
+		return nil, errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	return queries.ListAliases(ctx)
+}
+
 func (s *SQLiteStore) ListAliasCharacters(ctx context.Context, aliasName string) ([]models.Character, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
