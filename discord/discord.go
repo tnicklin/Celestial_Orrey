@@ -666,7 +666,6 @@ func (c *DefaultDiscord) formatAliasScoreLeaderboard(ctx context.Context) (cmdRe
 
 type reportEntry struct {
 	name     string
-	score    string
 	keyCount int
 	vault    string // "M4/M3/--"
 }
@@ -696,18 +695,12 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 			maxNameLen = len(char.Name)
 		}
 
-		score := "--"
-		if char.RIOScore > 0 {
-			score = fmt.Sprintf("%.1f", char.RIOScore)
-		}
-
 		v1 := vaultShortCode(charKeys, 0)
 		v2 := vaultShortCode(charKeys, 3)
 		v3 := vaultShortCode(charKeys, 7)
 
 		entries = append(entries, reportEntry{
 			name:     char.Name,
-			score:    score,
 			keyCount: len(charKeys),
 			vault:    fmt.Sprintf("%s/%s/%s", v1, v2, v3),
 		})
@@ -718,16 +711,16 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 		maxNameLen = 4
 	}
 
-	rowFmt := fmt.Sprintf("%%-%ds | %%6s | %%4s | %%s\n", maxNameLen)
+	rowFmt := fmt.Sprintf("%%-%ds | %%4s | %%s\n", maxNameLen)
 
 	var sb strings.Builder
 	sb.WriteString("```\n")
-	sb.WriteString(fmt.Sprintf(rowFmt, "Name", "Score", "Keys", "Vault"))
-	sb.WriteString(fmt.Sprintf("%s-|-%s-|-%s-|-%s\n",
-		strings.Repeat("-", maxNameLen), "------", "----", "-----------"))
+	sb.WriteString(fmt.Sprintf(rowFmt, "Name", "Keys", "Vault"))
+	sb.WriteString(fmt.Sprintf("%s-|-%s-|-%s\n",
+		strings.Repeat("-", maxNameLen), "----", "-----------"))
 	for _, e := range entries {
 		sb.WriteString(fmt.Sprintf(rowFmt,
-			e.name, e.score, fmt.Sprintf("%d", e.keyCount), e.vault))
+			e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
 	}
 	sb.WriteString("```")
 	return sb.String()
