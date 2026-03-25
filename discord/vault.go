@@ -12,7 +12,7 @@ const (
 
 // VaultRewards is the active vault reward table.
 // Switch between VaultRewardsPrepatch and VaultRewardsSeason1 as needed.
-var VaultRewards = VaultRewardsPrepatch
+var VaultRewards = VaultRewardsSeason1
 
 // VaultRewardsPrepatch contains vault rewards for 12.0.0 prepatch.
 // M+ caps at +12 during prepatch with no additional rewards beyond.
@@ -40,9 +40,6 @@ var VaultRewardsSeason1 = VaultRewardTable{
 	MaxKeyLevel: 18,
 
 	Thresholds: []VaultThreshold{
-		{18, 282, "Myth 4/6", "M4", true},
-		{15, 279, "Myth 3/6", "M3", true},
-		{12, 276, "Myth 2/6", "M2", true},
 		{10, 272, "Myth 1/6", "M1", true},
 		{7, 269, "Hero 4/6", "H4", false},
 		{6, 266, "Hero 3/6", "H3", false},
