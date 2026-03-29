@@ -512,6 +512,7 @@ func (c *DefaultDiscord) cmdReportAlias(ctx context.Context, args []string) (cmd
 		fmt.Sprintf("No Great Vault data found for alias **%s**.", args[0]),
 		chars,
 		resetTime,
+		nil,
 	)
 }
 
@@ -537,7 +538,7 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
 
-	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No Great Vault data available.", matchingChars, since)
+	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No Great Vault data available.", matchingChars, since, nil)
 }
 
 func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since time.Time) (cmdResponse, error) {
@@ -546,7 +547,13 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		return cmdResponse{}, err
 	}
 
-	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No characters in database.", allChars, since)
+	// Build character-to-alias mapping for grouping.
+	charAliases, err := c.buildCharAliasMap(ctx)
+	if err != nil {
+		return cmdResponse{}, err
+	}
+
+	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No characters in database.", allChars, since, charAliases)
 }
 
 func (c *DefaultDiscord) formatReportForCharacters(
@@ -555,6 +562,7 @@ func (c *DefaultDiscord) formatReportForCharacters(
 	emptyMessage string,
 	chars []models.Character,
 	since time.Time,
+	charAliases map[string]string,
 ) (cmdResponse, error) {
 	allChars := append([]models.Character(nil), chars...)
 
@@ -574,7 +582,7 @@ func (c *DefaultDiscord) formatReportForCharacters(
 
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
-		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, allChars, since)),
+		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, allChars, since, charAliases)),
 		Color:       embedColor,
 	}
 
@@ -657,7 +665,7 @@ func (c *DefaultDiscord) formatAliasScoreLeaderboard(ctx context.Context) (cmdRe
 
 	embed := &discordgo.MessageEmbed{
 		Title:       "Season Score Leaderboard",
-		Description: "Highest RaiderIO score per alias\n" + sb.String(),
+		Description: sb.String(),
 		Color:       embedColor,
 	}
 
@@ -666,12 +674,20 @@ func (c *DefaultDiscord) formatAliasScoreLeaderboard(ctx context.Context) (cmdRe
 
 type reportEntry struct {
 	name     string
+	realm    string
+	region   string
 	keyCount int
 	vault    string // "M4/M3/--"
 }
 
+// charKey returns a unique identifier for grouping by alias.
+func (e reportEntry) charKey() string {
+	return strings.ToLower(e.name) + "-" + strings.ToLower(e.realm) + "-" + strings.ToLower(e.region)
+}
+
 // buildReportBlock collects character data and formats it as an aligned code block table.
-func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Character, since time.Time) string {
+// When charAliases is non-nil, characters are grouped by alias with unaliased characters at the bottom.
+func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Character, since time.Time, charAliases map[string]string) string {
 	var entries []reportEntry
 	maxNameLen := 0
 
@@ -701,6 +717,8 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 
 		entries = append(entries, reportEntry{
 			name:     char.Name,
+			realm:    char.Realm,
+			region:   char.Region,
 			keyCount: len(charKeys),
 			vault:    fmt.Sprintf("%s/%s/%s", v1, v2, v3),
 		})
@@ -718,10 +736,48 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 	sb.WriteString(fmt.Sprintf(rowFmt, "Name", "Keys", "Vault"))
 	sb.WriteString(fmt.Sprintf("%s-|-%s-|-%s\n",
 		strings.Repeat("-", maxNameLen), "----", "-----------"))
-	for _, e := range entries {
-		sb.WriteString(fmt.Sprintf(rowFmt,
-			e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+
+	if len(charAliases) > 0 {
+		// Group entries by alias.
+		aliasGroups := make(map[string][]reportEntry)
+		var unaliased []reportEntry
+		aliasOrder := make([]string, 0)
+		seen := make(map[string]struct{})
+
+		for _, e := range entries {
+			alias, ok := charAliases[e.charKey()]
+			if !ok {
+				unaliased = append(unaliased, e)
+				continue
+			}
+			aliasGroups[alias] = append(aliasGroups[alias], e)
+			if _, exists := seen[alias]; !exists {
+				aliasOrder = append(aliasOrder, alias)
+				seen[alias] = struct{}{}
+			}
+		}
+		sort.Strings(aliasOrder)
+
+		for _, alias := range aliasOrder {
+			group := aliasGroups[alias]
+			sb.WriteString(alias + "\n")
+			for _, e := range group {
+				sb.WriteString(fmt.Sprintf(rowFmt,
+					e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+			}
+			sb.WriteString("\n")
+		}
+		for _, e := range unaliased {
+			sb.WriteString(fmt.Sprintf(rowFmt,
+				e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+		}
+	} else {
+		for _, e := range entries {
+			sb.WriteString(fmt.Sprintf(rowFmt,
+				e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+		}
 	}
+
 	sb.WriteString("```")
 	return sb.String()
 }
@@ -909,6 +965,11 @@ func (c *DefaultDiscord) cmdCharSync(ctx context.Context, args []string) (string
 	result, err := c.raiderIO.FetchWeeklyRuns(ctx, char)
 	if err != nil {
 		return "", fmt.Errorf("fetch from RaiderIO: %w", err)
+	}
+
+	// Ensure the character exists in the database even if they have no keys.
+	if err := c.store.EnsureCharacter(ctx, char.Name, char.Realm, char.Region); err != nil {
+		return "", fmt.Errorf("ensure character: %w", err)
 	}
 
 	// Update character's RIO score
@@ -1167,6 +1228,28 @@ func highestScoreCharacter(chars []models.Character) (models.Character, bool) {
 
 func characterDisplayKey(char models.Character) string {
 	return strings.ToLower(fmt.Sprintf("%s-%s-%s", char.Name, char.Realm, char.Region))
+}
+
+// buildCharAliasMap returns a map from character key (name-realm-region) to alias name.
+func (c *DefaultDiscord) buildCharAliasMap(ctx context.Context) (map[string]string, error) {
+	aliases, err := c.store.ListAliases(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string)
+	for _, alias := range aliases {
+		chars, err := c.store.ListAliasCharacters(ctx, alias)
+		if err != nil {
+			return nil, err
+		}
+		for _, char := range chars {
+			key := strings.ToLower(char.Name) + "-" + strings.ToLower(char.Realm) + "-" + strings.ToLower(char.Region)
+			result[key] = alias
+		}
+	}
+
+	return result, nil
 }
 
 func formatShortTime(completedAt string) string {

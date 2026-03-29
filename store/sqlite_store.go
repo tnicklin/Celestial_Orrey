@@ -760,6 +760,27 @@ func (s *SQLiteStore) UpdateCharacterScore(ctx context.Context, name, realm, reg
 	return nil
 }
 
+func (s *SQLiteStore) EnsureCharacter(ctx context.Context, name, realm, region string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	if _, err := queries.UpsertCharacter(ctx, db.UpsertCharacterParams{
+		Region: strings.ToLower(strings.TrimSpace(region)),
+		Realm:  strings.ToLower(strings.TrimSpace(realm)),
+		Name:   strings.ToLower(strings.TrimSpace(name)),
+	}); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
+}
+
 func (s *SQLiteStore) DeleteCharacter(ctx context.Context, name, realm, region string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
