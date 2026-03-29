@@ -42,6 +42,7 @@ type Store interface {
 	UpsertCompletedKey(ctx context.Context, key models.CompletedKey) error
 	UpsertWarcraftLogsLink(ctx context.Context, link WarcraftLogsLink) error
 	UpdateCharacterScore(ctx context.Context, name, realm, region string, score float64) error
+	EnsureCharacter(ctx context.Context, name, realm, region string) error
 	DeleteCharacter(ctx context.Context, name, realm, region string) error
 
 	UpsertElvUIVersion(ctx context.Context, v ElvUIVersion) error

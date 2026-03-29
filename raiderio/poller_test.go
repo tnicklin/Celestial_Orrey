@@ -113,6 +113,9 @@ func (f *fakeStore) DeleteCharacter(ctx context.Context, name, realm, region str
 func (f *fakeStore) UpdateCharacterScore(ctx context.Context, name, realm, region string, score float64) error {
 	return nil
 }
+func (f *fakeStore) EnsureCharacter(ctx context.Context, name, realm, region string) error {
+	return nil
+}
 func (f *fakeStore) ListUnlinkedKeysSince(ctx context.Context, cutoff time.Time) ([]models.CompletedKey, error) {
 	return nil, nil
 }
