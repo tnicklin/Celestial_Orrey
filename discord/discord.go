@@ -49,8 +49,9 @@ type DefaultDiscord struct {
 	raiderIO      rioClient.Client
 	warcraftLogs  warcraftlogs.WCL
 	simcQueue     simc.Queue
-	simcBiB       simc.BiBService
+	simcOrch       simc.Orchestrator
 	simcConfig    simc.Config
+	simcNames     simc.NameResolver
 	logger        logger.Logger
 	clock         clock.Clock
 	removeHandler func()
@@ -64,8 +65,9 @@ type Params struct {
 	RaiderIO     rioClient.Client
 	WarcraftLogs warcraftlogs.WCL
 	SimcQueue    simc.Queue
-	SimcBiB      simc.BiBService
+	SimcOrch      simc.Orchestrator
 	SimcConfig   simc.Config
+	SimcNames    simc.NameResolver
 	Logger       logger.Logger
 	Clock        clock.Clock
 }
@@ -83,6 +85,11 @@ func New(p Params) (*DefaultDiscord, error) {
 		clk = clock.System()
 	}
 
+	names := p.SimcNames
+	if names == nil {
+		names = simc.NewNoopNameResolver()
+	}
+
 	return &DefaultDiscord{
 		session:       session,
 		guildID:       cfg.GuildID,
@@ -91,8 +98,9 @@ func New(p Params) (*DefaultDiscord, error) {
 		raiderIO:      p.RaiderIO,
 		warcraftLogs:  p.WarcraftLogs,
 		simcQueue:     p.SimcQueue,
-		simcBiB:       p.SimcBiB,
+		simcOrch:       p.SimcOrch,
 		simcConfig:    p.SimcConfig,
+		simcNames:     names,
 		logger:        p.Logger,
 		clock:         clk,
 	}, nil
@@ -864,7 +872,7 @@ MANAGEMENT
 OTHER
   !elv                       - Show current ElvUI version
   !simc <run|status|stats|cancel>
-                             - Best in Bags simulator (see !simc help)
+                             - Sim simulator (see !simc help)
   !help                      - Show this help message
 ` + "```"
 }

@@ -1,6 +1,6 @@
 package simc
 
-// Slot is a gear slot the BiB orchestrator permutes over.
+// Slot is a gear slot the orchestrator permutes over.
 type Slot int
 
 const (
@@ -94,14 +94,15 @@ func (t Track) String() string {
 	return "Unknown"
 }
 
-// IsBiBEligible reports whether items on this track are included in the
-// BiB candidate set per the user's spec (hero + myth only).
-func (t Track) IsBiBEligible() bool {
+// IsEligible reports whether items on this track are included in the
+// candidate set per the user's spec (hero + myth only).
+func (t Track) IsEligible() bool {
 	return t == TrackHero || t == TrackMyth
 }
 
 // Item represents a single piece of gear from the addon dump. Gems and
-// enchants are intentionally not preserved — BiB sims them bare.
+// enchants are preserved verbatim — sims use whatever the user has on the
+// item.
 type Item struct {
 	Slot         Slot
 	AddonSlotKey string // original key e.g. "finger1"
@@ -111,13 +112,15 @@ type Item struct {
 	BonusIDs     string // raw "10384/10299/..." string, preserved as-is
 	CraftedStats string // "crafted_stats=..." raw value, empty if none
 	Context      string // "context=..." raw value, empty if none
+	GemIDs       string // "gem_id=..." raw value, empty if no gems
+	EnchantID    string // "enchant_id=..." raw value, empty if no enchant
 	Track        Track
 	OriginalIlvl int
 	Extras       []string // any other key=value tokens (e.g. drop_level=)
 }
 
-// Render emits the simc-format item line with the given target ilvl and
-// gems/enchants stripped per spec.
+// Render emits the simc-format item line with the given target ilvl. Gems
+// and enchants from the source paste are emitted as-is.
 func (it Item) Render(targetIlvl int) string {
 	parts := []string{",id=" + itoa(it.ItemID)}
 	if it.BonusIDs != "" {
@@ -128,6 +131,12 @@ func (it Item) Render(targetIlvl int) string {
 	}
 	if it.Context != "" {
 		parts = append(parts, "context="+it.Context)
+	}
+	if it.GemIDs != "" {
+		parts = append(parts, "gem_id="+it.GemIDs)
+	}
+	if it.EnchantID != "" {
+		parts = append(parts, "enchant_id="+it.EnchantID)
 	}
 	for _, e := range it.Extras {
 		parts = append(parts, e)

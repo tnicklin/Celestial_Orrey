@@ -32,7 +32,7 @@ simc:
   sample_interval: 2s
   cgroup_root: /sys/fs/cgroup
 
-simc_bib:
+simc_run:
   rank_pass_iterations: 1000
   final_pass_iterations: 10000
   top_n: 10

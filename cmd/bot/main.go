@@ -39,7 +39,7 @@ type appConfig struct {
 	Store        store.Config        `yaml:"store"`
 	ElvUI        elvui.Config        `yaml:"elvui"`
 	Simc         simc.Config         `yaml:"simc"`
-	SimcBiB      simc.BiBConfig      `yaml:"simc_bib"`
+	SimcOrch      simc.OrchestratorConfig      `yaml:"simc_run"`
 }
 
 type result struct {
@@ -56,7 +56,7 @@ type result struct {
 	ElvUIPoller   elvui.Poller
 	SimcRunner    *simc.Runner
 	SimcQueue     *simc.DefaultQueue
-	SimcBiB       *simc.DefaultBiBService
+	SimcOrch       *simc.DefaultOrchestrator
 	SimcStats     *simc.StatsServer
 	DiscordClient discord.Discord
 }
@@ -121,8 +121,8 @@ func build() (result, error) {
 		Runner: simcRunner,
 		Logger: appLogger,
 	})
-	simcBiB := simc.NewBiBService(simc.BiBServiceParams{
-		Config: cfg.SimcBiB,
+	simcOrch := simc.NewOrchestrator(simc.OrchestratorParams{
+		Config: cfg.SimcOrch,
 		Queue:  simcQueue,
 		Logger: appLogger,
 	})
@@ -131,6 +131,7 @@ func build() (result, error) {
 		Queue:  simcQueue,
 		Logger: appLogger,
 	})
+	simcNames := simc.NewWowheadResolver(st, appLogger)
 
 	discordClient, err := discord.New(discord.Params{
 		Config:       cfg.Discord,
@@ -138,8 +139,9 @@ func build() (result, error) {
 		RaiderIO:     rio,
 		WarcraftLogs: wclClient,
 		SimcQueue:    simcQueue,
-		SimcBiB:      simcBiB,
+		SimcOrch:      simcOrch,
 		SimcConfig:   cfg.Simc,
+		SimcNames:    simcNames,
 		Logger:       appLogger,
 		Clock:        ntpClock,
 	})
@@ -173,7 +175,7 @@ func build() (result, error) {
 		ElvUIPoller:   elvuiPoller,
 		SimcRunner:    simcRunner,
 		SimcQueue:     simcQueue,
-		SimcBiB:       simcBiB,
+		SimcOrch:       simcOrch,
 		SimcStats:     simcStats,
 	}, nil
 }
@@ -191,7 +193,7 @@ type runParams struct {
 	WCLPoller     warcraftlogs.Poller
 	ElvUIPoller   elvui.Poller
 	SimcQueue     *simc.DefaultQueue
-	SimcBiB       *simc.DefaultBiBService
+	SimcOrch       *simc.DefaultOrchestrator
 	SimcStats     *simc.StatsServer
 	DiscordClient discord.Discord
 	Logger        logger.Logger
@@ -295,13 +297,13 @@ func run(p runParams) error {
 
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			if err := p.SimcBiB.Start(ctx); err != nil {
-				return fmt.Errorf("start simc bib: %w", err)
+			if err := p.SimcOrch.Start(ctx); err != nil {
+				return fmt.Errorf("start simc orchestrator: %w", err)
 			}
 			return nil
 		},
 		OnStop: func(_ context.Context) error {
-			p.SimcBiB.Stop()
+			p.SimcOrch.Stop()
 			return nil
 		},
 	})

@@ -12,8 +12,8 @@ import (
 	"github.com/tnicklin/celestial_orrey/logger"
 )
 
-// BiBConfig tunes the Best-in-Bags orchestrator.
-type BiBConfig struct {
+// OrchestratorConfig tunes the sim orchestrator.
+type OrchestratorConfig struct {
 	RankPassIterations  int           `yaml:"rank_pass_iterations"`
 	FinalPassIterations int           `yaml:"final_pass_iterations"`
 	TopN                int           `yaml:"top_n"`
@@ -23,8 +23,8 @@ type BiBConfig struct {
 	HistorySize         int           `yaml:"history_size"`
 }
 
-// Defaults applies default values to the BiB config.
-func (c *BiBConfig) Defaults() {
+// Defaults applies default values to the config.
+func (c *OrchestratorConfig) Defaults() {
 	if c.RankPassIterations <= 0 {
 		c.RankPassIterations = 1000
 	}
@@ -48,20 +48,20 @@ func (c *BiBConfig) Defaults() {
 	}
 }
 
-// BiBRunID identifies a single Best-in-Bags request.
-type BiBRunID uint64
+// RunID identifies a single sim request.
+type RunID uint64
 
 // ProgressFunc is invoked when the orchestrator wants to surface progress
 // to the user. Implementations should not block.
-type ProgressFunc func(BiBRunInfo)
+type ProgressFunc func(RunInfo)
 
-// CompletionFunc is invoked exactly once when a BiB run terminates (success,
+// CompletionFunc is invoked exactly once when a run terminates (success,
 // failure, or cancellation).
-type CompletionFunc func(BiBRunInfo, *BiBResult, error)
+type CompletionFunc func(RunInfo, *RunResult, error)
 
-// BiBRunInfo is the user-facing snapshot of a single BiB run.
-type BiBRunInfo struct {
-	ID               BiBRunID      `json:"id"`
+// RunInfo is the user-facing snapshot of a single run.
+type RunInfo struct {
+	ID               RunID      `json:"id"`
 	Requester        string        `json:"requester"`
 	Phase            string        `json:"phase"`
 	SubmittedAt      time.Time     `json:"submitted_at"`
@@ -71,25 +71,25 @@ type BiBRunInfo struct {
 	CompletedSims    int           `json:"completed_sims"`
 	BestPatchwerk    float64       `json:"best_patchwerk_dps"`
 	BestDungeonSlice float64       `json:"best_dungeon_slice_dps"`
-	Status           BiBRunStatus  `json:"status"`
+	Status           RunStatus  `json:"status"`
 	ErrMsg           string        `json:"err_msg,omitempty"`
 	Duration         time.Duration `json:"duration,omitempty"`
 }
 
-// BiBRunStatus is the terminal or in-progress state of a BiB run.
-type BiBRunStatus string
+// RunStatus is the terminal or in-progress state of a run.
+type RunStatus string
 
 const (
-	BiBStatusQueued    BiBRunStatus = "queued"
-	BiBStatusRunning   BiBRunStatus = "running"
-	BiBStatusOK        BiBRunStatus = "ok"
-	BiBStatusFailed    BiBRunStatus = "failed"
-	BiBStatusCanceled  BiBRunStatus = "canceled"
+	RunStatusQueued    RunStatus = "queued"
+	RunStatusRunning   RunStatus = "running"
+	RunStatusOK        RunStatus = "ok"
+	RunStatusFailed    RunStatus = "failed"
+	RunStatusCanceled  RunStatus = "canceled"
 )
 
-// BiBResult is the final output of a successful BiB run.
-type BiBResult struct {
-	RunID            BiBRunID
+// RunResult is the final output of a successful run.
+type RunResult struct {
+	RunID            RunID
 	Patchwerk        FightStyleResult
 	DungeonSlice     FightStyleResult
 	CombinationCount int
@@ -120,61 +120,61 @@ type SlotChange struct {
 	Changed bool
 }
 
-// BiBSnapshot is exported via Stats() for the discord !simc stats command.
-type BiBSnapshot struct {
-	Running *BiBRunInfo   `json:"running,omitempty"`
-	Pending []BiBRunInfo  `json:"pending"`
-	Recent  []BiBRunInfo  `json:"recent"`
+// OrchestratorSnapshot is exported via Stats() for the discord !simc stats command.
+type OrchestratorSnapshot struct {
+	Running *RunInfo   `json:"running,omitempty"`
+	Pending []RunInfo  `json:"pending"`
+	Recent  []RunInfo  `json:"recent"`
 }
 
-// BiBService orchestrates Best-in-Bags runs.
-type BiBService interface {
-	Submit(profile []byte, requester string, onProgress ProgressFunc, onDone CompletionFunc) (BiBRunID, error)
-	Cancel(id BiBRunID) error
-	Stats() BiBSnapshot
+// Orchestrator orchestrates sim runs.
+type Orchestrator interface {
+	Submit(profile []byte, requester string, onProgress ProgressFunc, onDone CompletionFunc) (RunID, error)
+	Cancel(id RunID) error
+	Stats() OrchestratorSnapshot
 	Start(ctx context.Context) error
 	Stop()
 }
 
-// BiBServiceParams holds dependencies.
-type BiBServiceParams struct {
-	Config BiBConfig
+// OrchestratorParams holds dependencies.
+type OrchestratorParams struct {
+	Config OrchestratorConfig
 	Queue  Queue
 	Logger logger.Logger
 }
 
-// DefaultBiBService is the concrete BiB orchestrator. One run executes at a
+// DefaultOrchestrator is the concrete orchestrator. One run executes at a
 // time; further submissions queue.
-type DefaultBiBService struct {
-	cfg    BiBConfig
+type DefaultOrchestrator struct {
+	cfg    OrchestratorConfig
 	queue  Queue
 	logger logger.Logger
 
 	mu       sync.Mutex
-	nextID   BiBRunID
-	pending  []*bibEnvelope
-	running  *bibEnvelope
-	recent   []BiBRunInfo
+	nextID   RunID
+	pending  []*runEnvelope
+	running  *runEnvelope
+	recent   []RunInfo
 	wake     chan struct{}
 	stop     chan struct{}
 	done     chan struct{}
 	canceled atomic.Bool
 }
 
-var _ BiBService = (*DefaultBiBService)(nil)
+var _ Orchestrator = (*DefaultOrchestrator)(nil)
 
-type bibEnvelope struct {
-	info       BiBRunInfo
+type runEnvelope struct {
+	info       RunInfo
 	profile    []byte
 	onProgress ProgressFunc
 	onDone     CompletionFunc
 	cancel     context.CancelFunc
 }
 
-// NewBiBService constructs the orchestrator.
-func NewBiBService(p BiBServiceParams) *DefaultBiBService {
+// NewOrchestrator constructs the orchestrator.
+func NewOrchestrator(p OrchestratorParams) *DefaultOrchestrator {
 	p.Config.Defaults()
-	return &DefaultBiBService{
+	return &DefaultOrchestrator{
 		cfg:    p.Config,
 		queue:  p.Queue,
 		logger: p.Logger,
@@ -183,9 +183,9 @@ func NewBiBService(p BiBServiceParams) *DefaultBiBService {
 }
 
 // Start launches the worker.
-func (s *DefaultBiBService) Start(_ context.Context) error {
+func (s *DefaultOrchestrator) Start(_ context.Context) error {
 	if s.queue == nil {
-		return errors.New("simc: bib service requires a queue")
+		return errors.New("simc: orchestrator requires a queue")
 	}
 	s.stop = make(chan struct{})
 	s.done = make(chan struct{})
@@ -193,8 +193,8 @@ func (s *DefaultBiBService) Start(_ context.Context) error {
 	return nil
 }
 
-// Stop signals the worker to exit. Any in-flight BiB run is canceled.
-func (s *DefaultBiBService) Stop() {
+// Stop signals the worker to exit. Any in-flight run is canceled.
+func (s *DefaultOrchestrator) Stop() {
 	if s.stop == nil {
 		return
 	}
@@ -207,9 +207,9 @@ func (s *DefaultBiBService) Stop() {
 	<-s.done
 }
 
-// Submit enqueues a new BiB request and returns its assigned ID. The
+// Submit enqueues a new request and returns its assigned ID. The
 // onProgress and onDone callbacks may be nil.
-func (s *DefaultBiBService) Submit(profile []byte, requester string, onProgress ProgressFunc, onDone CompletionFunc) (BiBRunID, error) {
+func (s *DefaultOrchestrator) Submit(profile []byte, requester string, onProgress ProgressFunc, onDone CompletionFunc) (RunID, error) {
 	if len(profile) == 0 {
 		return 0, errors.New("simc: empty profile")
 	}
@@ -217,12 +217,12 @@ func (s *DefaultBiBService) Submit(profile []byte, requester string, onProgress 
 	defer s.mu.Unlock()
 	s.nextID++
 	id := s.nextID
-	env := &bibEnvelope{
-		info: BiBRunInfo{
+	env := &runEnvelope{
+		info: RunInfo{
 			ID:          id,
 			Requester:   requester,
 			SubmittedAt: time.Now(),
-			Status:      BiBStatusQueued,
+			Status:      RunStatusQueued,
 			Phase:       "queued",
 		},
 		profile:    profile,
@@ -234,8 +234,8 @@ func (s *DefaultBiBService) Submit(profile []byte, requester string, onProgress 
 	return id, nil
 }
 
-// Cancel cancels a pending or in-flight BiB run.
-func (s *DefaultBiBService) Cancel(id BiBRunID) error {
+// Cancel cancels a pending or in-flight run.
+func (s *DefaultOrchestrator) Cancel(id RunID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running != nil && s.running.info.ID == id {
@@ -249,7 +249,7 @@ func (s *DefaultBiBService) Cancel(id BiBRunID) error {
 			continue
 		}
 		s.pending = append(s.pending[:i], s.pending[i+1:]...)
-		env.info.Status = BiBStatusCanceled
+		env.info.Status = RunStatusCanceled
 		env.info.FinishedAt = time.Now()
 		s.recordRecentLocked(env.info)
 		if env.onDone != nil {
@@ -261,10 +261,10 @@ func (s *DefaultBiBService) Cancel(id BiBRunID) error {
 }
 
 // Stats returns a snapshot for the bot's status command.
-func (s *DefaultBiBService) Stats() BiBSnapshot {
+func (s *DefaultOrchestrator) Stats() OrchestratorSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	snap := BiBSnapshot{}
+	snap := OrchestratorSnapshot{}
 	if s.running != nil {
 		ri := s.running.info
 		snap.Running = &ri
@@ -276,14 +276,14 @@ func (s *DefaultBiBService) Stats() BiBSnapshot {
 	return snap
 }
 
-func (s *DefaultBiBService) wakeWorker() {
+func (s *DefaultOrchestrator) wakeWorker() {
 	select {
 	case s.wake <- struct{}{}:
 	default:
 	}
 }
 
-func (s *DefaultBiBService) workerLoop() {
+func (s *DefaultOrchestrator) workerLoop() {
 	defer close(s.done)
 	for {
 		select {
@@ -302,13 +302,13 @@ func (s *DefaultBiBService) workerLoop() {
 	}
 }
 
-func (s *DefaultBiBService) drainPending() {
+func (s *DefaultOrchestrator) drainPending() {
 	s.mu.Lock()
 	pending := s.pending
 	s.pending = nil
 	s.mu.Unlock()
 	for _, env := range pending {
-		env.info.Status = BiBStatusCanceled
+		env.info.Status = RunStatusCanceled
 		env.info.FinishedAt = time.Now()
 		s.mu.Lock()
 		s.recordRecentLocked(env.info)
@@ -319,7 +319,7 @@ func (s *DefaultBiBService) drainPending() {
 	}
 }
 
-func (s *DefaultBiBService) popNextLocked() *bibEnvelope {
+func (s *DefaultOrchestrator) popNextLocked() *runEnvelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running != nil || len(s.pending) == 0 {
@@ -328,13 +328,13 @@ func (s *DefaultBiBService) popNextLocked() *bibEnvelope {
 	env := s.pending[0]
 	s.pending = s.pending[1:]
 	s.running = env
-	env.info.Status = BiBStatusRunning
+	env.info.Status = RunStatusRunning
 	env.info.StartedAt = time.Now()
 	env.info.Phase = "starting"
 	return env
 }
 
-func (s *DefaultBiBService) executeRun(env *bibEnvelope) {
+func (s *DefaultOrchestrator) executeRun(env *runEnvelope) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	env.cancel = cancel
@@ -348,13 +348,13 @@ func (s *DefaultBiBService) executeRun(env *bibEnvelope) {
 	env.info.Duration = env.info.FinishedAt.Sub(env.info.StartedAt)
 	switch {
 	case err == nil:
-		env.info.Status = BiBStatusOK
+		env.info.Status = RunStatusOK
 		env.info.Phase = "completed"
 	case errors.Is(err, context.Canceled):
-		env.info.Status = BiBStatusCanceled
+		env.info.Status = RunStatusCanceled
 		env.info.Phase = "canceled"
 	default:
-		env.info.Status = BiBStatusFailed
+		env.info.Status = RunStatusFailed
 		env.info.Phase = "failed"
 		env.info.ErrMsg = err.Error()
 	}
@@ -372,15 +372,15 @@ func (s *DefaultBiBService) executeRun(env *bibEnvelope) {
 	}
 }
 
-func (s *DefaultBiBService) recordRecentLocked(info BiBRunInfo) {
-	s.recent = append([]BiBRunInfo{info}, s.recent...)
+func (s *DefaultOrchestrator) recordRecentLocked(info RunInfo) {
+	s.recent = append([]RunInfo{info}, s.recent...)
 	if len(s.recent) > s.cfg.HistorySize {
 		s.recent = s.recent[:s.cfg.HistorySize]
 	}
 }
 
-// runOnce executes the full BiB pipeline for a single submitted request.
-func (s *DefaultBiBService) runOnce(ctx context.Context, env *bibEnvelope) (*BiBResult, error) {
+// runOnce executes the full pipeline for a single submitted request.
+func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*RunResult, error) {
 	profile, err := ParseProfile(env.profile)
 	if err != nil {
 		return nil, fmt.Errorf("parse profile: %w", err)
@@ -396,14 +396,14 @@ func (s *DefaultBiBService) runOnce(ctx context.Context, env *bibEnvelope) (*BiB
 	}
 	totalSims := totalPerStyle * 2 // patchwerk + dungeon_slice
 
-	s.updateInfo(env, func(i *BiBRunInfo) {
+	s.updateInfo(env, func(i *RunInfo) {
 		i.TotalSims = totalSims
 		i.Phase = fmt.Sprintf("starting (%d combinations × 2 styles)", len(combos))
 	})
 
 	baseline := BuildEquippedBaseline(profile)
 
-	res := &BiBResult{
+	res := &RunResult{
 		RunID:            env.info.ID,
 		CombinationCount: len(combos),
 		BaselineProfile:  baseline,
@@ -418,10 +418,10 @@ func (s *DefaultBiBService) runOnce(ctx context.Context, env *bibEnvelope) (*BiB
 		switch fs {
 		case FightStylePatchwerk:
 			res.Patchwerk = styleResult
-			s.updateInfo(env, func(i *BiBRunInfo) { i.BestPatchwerk = styleResult.BestDPS })
+			s.updateInfo(env, func(i *RunInfo) { i.BestPatchwerk = styleResult.BestDPS })
 		case FightStyleDungeonSlice:
 			res.DungeonSlice = styleResult
-			s.updateInfo(env, func(i *BiBRunInfo) { i.BestDungeonSlice = styleResult.BestDPS })
+			s.updateInfo(env, func(i *RunInfo) { i.BestDungeonSlice = styleResult.BestDPS })
 		}
 	}
 
@@ -431,10 +431,10 @@ func (s *DefaultBiBService) runOnce(ctx context.Context, env *bibEnvelope) (*BiB
 
 // runFightStyle runs the baseline, the rank pass, and the final pass for a
 // single fight style.
-func (s *DefaultBiBService) runFightStyle(ctx context.Context, env *bibEnvelope, profile *Profile, baseline []byte, combos []Loadout, fs FightStyle) (FightStyleResult, error) {
+func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelope, profile *Profile, baseline []byte, combos []Loadout, fs FightStyle) (FightStyleResult, error) {
 	out := FightStyleResult{FightStyle: fs}
 
-	s.updateInfo(env, func(i *BiBRunInfo) { i.Phase = fmt.Sprintf("baseline (%s)", fs) })
+	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("baseline (%s)", fs) })
 	baselineRes, err := s.runOne(ctx, env, baseline, fs, s.cfg.FinalPassIterations)
 	if err != nil {
 		return out, fmt.Errorf("baseline: %w", err)
@@ -462,7 +462,7 @@ func (s *DefaultBiBService) runFightStyle(ctx context.Context, env *bibEnvelope,
 		s.bumpCompleted(env)
 		if (i+1)%s.cfg.ProgressEvery == 0 && time.Since(lastProgress) >= s.cfg.ProgressMinInterval {
 			lastProgress = time.Now()
-			s.updateInfo(env, func(info *BiBRunInfo) {
+			s.updateInfo(env, func(info *RunInfo) {
 				info.Phase = fmt.Sprintf("rank pass %s (%d/%d)", fs, i+1, len(combos))
 			})
 			s.notifyProgress(env)
@@ -478,7 +478,7 @@ func (s *DefaultBiBService) runFightStyle(ctx context.Context, env *bibEnvelope,
 	bestIdx := -1
 	bestDPS := 0.0
 	if topN > 0 {
-		s.updateInfo(env, func(i *BiBRunInfo) { i.Phase = fmt.Sprintf("final pass %s (top %d)", fs, topN) })
+		s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("final pass %s (top %d)", fs, topN) })
 		for k := 0; k < topN; k++ {
 			if err := ctx.Err(); err != nil {
 				return out, err
@@ -516,12 +516,12 @@ func (s *DefaultBiBService) runFightStyle(ctx context.Context, env *bibEnvelope,
 }
 
 // runOne submits a single sim through the queue and waits for its outcome.
-func (s *DefaultBiBService) runOne(ctx context.Context, env *bibEnvelope, body []byte, fs FightStyle, iters int) (SimResult, error) {
+func (s *DefaultOrchestrator) runOne(ctx context.Context, env *runEnvelope, body []byte, fs FightStyle, iters int) (SimResult, error) {
 	id, _, err := s.queue.Submit(SimRequest{
 		Profile:    body,
 		FightStyle: fs,
 		Iterations: iters,
-	}, fmt.Sprintf("bib#%d/%s", env.info.ID, env.info.Requester))
+	}, fmt.Sprintf("sim#%d/%s", env.info.ID, env.info.Requester))
 	if err != nil {
 		return SimResult{}, err
 	}
@@ -547,17 +547,17 @@ func (s *DefaultBiBService) runOne(ctx context.Context, env *bibEnvelope, body [
 	}
 }
 
-func (s *DefaultBiBService) bumpCompleted(env *bibEnvelope) {
-	s.updateInfo(env, func(i *BiBRunInfo) { i.CompletedSims++ })
+func (s *DefaultOrchestrator) bumpCompleted(env *runEnvelope) {
+	s.updateInfo(env, func(i *RunInfo) { i.CompletedSims++ })
 }
 
-func (s *DefaultBiBService) updateInfo(env *bibEnvelope, mut func(*BiBRunInfo)) {
+func (s *DefaultOrchestrator) updateInfo(env *runEnvelope, mut func(*RunInfo)) {
 	s.mu.Lock()
 	mut(&env.info)
 	s.mu.Unlock()
 }
 
-func (s *DefaultBiBService) notifyProgress(env *bibEnvelope) {
+func (s *DefaultOrchestrator) notifyProgress(env *runEnvelope) {
 	if env.onProgress == nil {
 		return
 	}
@@ -570,7 +570,7 @@ func (s *DefaultBiBService) notifyProgress(env *bibEnvelope) {
 func computeSlotChanges(profile *Profile, best Loadout) []SlotChange {
 	equipped := profile.EquippedBySlot()
 	var changes []SlotChange
-	for _, slot := range bibSlotOrder {
+	for _, slot := range slotOrder {
 		cur := equipped[slot]
 		bst := best.Items[slot]
 		ch := SlotChange{

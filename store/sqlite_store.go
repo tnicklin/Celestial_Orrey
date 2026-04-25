@@ -879,6 +879,38 @@ func (s *SQLiteStore) GetElvUIVersion(ctx context.Context) (*ElvUIVersion, error
 	}, nil
 }
 
+func (s *SQLiteStore) GetItemName(ctx context.Context, itemID int64) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.db == nil {
+		return "", errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	return queries.GetItemName(ctx, itemID)
+}
+
+func (s *SQLiteStore) UpsertItemName(ctx context.Context, itemID int64, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return errors.New("store is not open")
+	}
+
+	queries := db.New(s.db)
+	if err := queries.UpsertItemName(ctx, db.UpsertItemNameParams{
+		ItemID: itemID,
+		Name:   name,
+	}); err != nil {
+		return err
+	}
+
+	s.scheduleFlush()
+	return nil
+}
+
 func (s *SQLiteStore) flushLocked(ctx context.Context, path string) error {
 	if s.db == nil {
 		return errors.New("store is not open")

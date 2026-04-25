@@ -86,13 +86,46 @@ func TestParseProfile(t *testing.T) {
 		}
 	}
 
+	// Gems and enchants are preserved (not stripped) so the sim uses
+	// whatever the player has on each item.
 	for _, it := range p.Items {
-		if strings.Contains(it.Render(0), "gem_id=") {
-			t.Errorf("rendered item still contains gem_id: %s", it.Render(0))
+		rendered := it.Render(0)
+		if it.GemIDs == "" && strings.Contains(rendered, "gem_id=") {
+			t.Errorf("item without GemIDs rendered with gem_id: %s", rendered)
 		}
-		if strings.Contains(it.Render(0), "enchant_id=") {
-			t.Errorf("rendered item still contains enchant_id: %s", it.Render(0))
+		if it.EnchantID == "" && strings.Contains(rendered, "enchant_id=") {
+			t.Errorf("item without EnchantID rendered with enchant_id: %s", rendered)
 		}
+	}
+}
+
+func TestParseItem_PreservesGemsAndEnchants(t *testing.T) {
+	p, err := ParseProfile([]byte(sampleProfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var head *Item
+	for i := range p.Items {
+		if p.Items[i].ItemID == 212014 {
+			head = &p.Items[i]
+			break
+		}
+	}
+	if head == nil {
+		t.Fatal("did not find head item 212014")
+	}
+	if head.GemIDs != "213743" {
+		t.Errorf("GemIDs = %q, want 213743", head.GemIDs)
+	}
+	if head.EnchantID != "7901" {
+		t.Errorf("EnchantID = %q, want 7901", head.EnchantID)
+	}
+	rendered := head.Render(0)
+	if !strings.Contains(rendered, "gem_id=213743") {
+		t.Errorf("rendered missing gem_id: %s", rendered)
+	}
+	if !strings.Contains(rendered, "enchant_id=7901") {
+		t.Errorf("rendered missing enchant_id: %s", rendered)
 	}
 }
 

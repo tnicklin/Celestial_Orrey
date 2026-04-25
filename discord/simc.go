@@ -29,7 +29,7 @@ const (
 const downloadTimeout = 30 * time.Second
 
 func (c *DefaultDiscord) cmdSimc(ctx context.Context, m *discordgo.MessageCreate, args []string) (cmdResponse, error) {
-	if c.simcBiB == nil || c.simcQueue == nil {
+	if c.simcOrch == nil || c.simcQueue == nil {
 		return cmdResponse{content: "SimC is not configured on this bot."}, nil
 	}
 	if len(args) == 0 {
@@ -75,42 +75,47 @@ func (c *DefaultDiscord) cmdSimcRun(ctx context.Context, m *discordgo.MessageCre
 	}
 	stats := simc.AnalyzeCandidates(parsed.CandidatesBySlot())
 
+	// Prime the name resolver with anything the addon comment already
+	// gave us — saves a wowhead round trip later.
+	for _, it := range parsed.Items {
+		if it.Name != "" && it.ItemID != 0 {
+			c.simcNames.Prime(ctx, it.ItemID, it.Name)
+		}
+	}
+
 	requester := m.Author.Username
 	if m.Member != nil && m.Member.Nick != "" {
 		requester = m.Member.Nick
 	}
 
-	// Use the next BiB ID for the thread name (it'll match the actual one
+	// Use the next ID for the thread name (it'll match the actual one
 	// since Submit assigns IDs monotonically and we hold no other ones).
-	threadID, threadName, threadOK := c.openBiBThread(m.ChannelID, m.ID, requester)
+	threadID, threadName, threadOK := c.openSimThread(m.ChannelID, m.ID, parsed)
 
-	id, err := c.simcBiB.Submit(profile, requester,
-		func(info simc.BiBRunInfo) { c.postBiBProgress(threadID, info) },
-		func(info simc.BiBRunInfo, res *simc.BiBResult, runErr error) {
-			c.postBiBOutcome(threadID, info, res, runErr)
+	id, err := c.simcOrch.Submit(profile, requester,
+		func(info simc.RunInfo) { c.postSimProgress(threadID, info) },
+		func(info simc.RunInfo, res *simc.RunResult, runErr error) {
+			c.postSimOutcome(threadID, info, res, runErr)
 		},
 	)
 	if err != nil {
 		return cmdResponse{}, err
 	}
 
-	c.postBiBIntro(threadID, id, requester, profile, stats)
+	c.postSimIntro(threadID, id, parsed, profile, stats)
 
 	if threadOK {
-		return cmdResponse{content: fmt.Sprintf("Started **BiB #%d** in thread **%s**.", id, threadName)}, nil
+		return cmdResponse{content: fmt.Sprintf("Started **sim #%d** in thread **%s**.", id, threadName)}, nil
 	}
-	// Threads not available; tell the user we'll post inline.
-	return cmdResponse{content: fmt.Sprintf("Started **BiB #%d** (threads unavailable; posting inline).", id)}, nil
+	return cmdResponse{content: fmt.Sprintf("Started **sim #%d** (threads unavailable; posting inline).", id)}, nil
 }
 
-// openBiBThread starts a public thread off the user's command message.
-// Returns the threadID + name when successful; on failure it returns the
-// channel ID and a false ok flag so callers fall back to inline posts.
-func (c *DefaultDiscord) openBiBThread(channelID, messageID string, requester string) (string, string, bool) {
-	name := fmt.Sprintf("BiB %s — %s", requester, time.Now().Format("Jan 2 15:04"))
-	if len(name) > 95 {
-		name = name[:95] // Discord caps thread names at 100 chars
-	}
+// openSimThread starts a public thread off the user's command message. The
+// thread name is "character-realm -- Mon Jan 2 15:04". On any failure
+// (no permission, unsupported channel) returns the channel ID and ok=false
+// so callers fall back to inline posts.
+func (c *DefaultDiscord) openSimThread(channelID, messageID string, p *simc.Profile) (string, string, bool) {
+	name := simThreadName(p)
 	thread, err := c.session.MessageThreadStartComplex(channelID, messageID, &discordgo.ThreadStart{
 		Name:                name,
 		AutoArchiveDuration: 4320, // 3 days
@@ -122,20 +127,51 @@ func (c *DefaultDiscord) openBiBThread(channelID, messageID string, requester st
 	return thread.ID, name, true
 }
 
-// postBiBIntro sends the first message in a BiB thread: a summary plus the
+// simThreadName builds a thread name from the parsed profile. Falls back to
+// a generic "sim -- <time>" if the character/realm aren't extractable.
+func simThreadName(p *simc.Profile) string {
+	char := strings.ToLower(p.CharacterName())
+	realm := strings.ToLower(p.Realm())
+	stamp := time.Now().Format("Jan 2 15:04")
+	var name string
+	switch {
+	case char != "" && realm != "":
+		name = fmt.Sprintf("%s-%s -- %s", char, realm, stamp)
+	case char != "":
+		name = fmt.Sprintf("%s -- %s", char, stamp)
+	default:
+		name = fmt.Sprintf("sim -- %s", stamp)
+	}
+	if len(name) > 95 {
+		name = name[:95] // Discord caps at 100 chars
+	}
+	return name
+}
+
+// postSimIntro sends the first message in a sim thread: a summary plus the
 // original input file as an attachment so the run is self-documenting.
-func (c *DefaultDiscord) postBiBIntro(threadID string, id simc.BiBRunID, requester string, profile []byte, stats simc.CombinationStats) {
+func (c *DefaultDiscord) postSimIntro(threadID string, id simc.RunID, p *simc.Profile, profile []byte, stats simc.CombinationStats) {
+	header := fmt.Sprintf("**Sim #%d**", id)
+	if char := p.CharacterName(); char != "" {
+		header += fmt.Sprintf(" — %s", char)
+		if spec := p.Spec(); spec != "" {
+			header += fmt.Sprintf(" (%s %s)", spec, p.ClassName())
+		}
+		if realm := p.Realm(); realm != "" {
+			header += fmt.Sprintf(" — %s", realm)
+		}
+	}
 	body := fmt.Sprintf(
-		"**BiB #%d** for **%s**\n%d candidate combinations × 2 fight styles (Patchwerk + Dungeon Slice)",
-		id, requester, stats.Total,
+		"%s\n%d candidate combinations × 2 fight styles (Patchwerk + Dungeon Slice)",
+		header, stats.Total,
 	)
-	if w := bibCandidateWarnings(stats); w != "" {
+	if w := simCandidateWarnings(stats); w != "" {
 		body = body + "\n\n" + w
 	}
 	send := &discordgo.MessageSend{
 		Content: body,
 		Files: []*discordgo.File{{
-			Name:        fmt.Sprintf("bib-%d-input.simc", id),
+			Name:        fmt.Sprintf("sim-%d-input.simc", id),
 			ContentType: "text/plain",
 			Reader:      bytes.NewReader(profile),
 		}},
@@ -145,7 +181,7 @@ func (c *DefaultDiscord) postBiBIntro(threadID string, id simc.BiBRunID, request
 	}
 }
 
-func bibCandidateWarnings(stats simc.CombinationStats) string {
+func simCandidateWarnings(stats simc.CombinationStats) string {
 	if len(stats.Empty) == 0 && len(stats.DoubleEmpty) == 0 {
 		return ""
 	}
@@ -167,35 +203,35 @@ func bibCandidateWarnings(stats simc.CombinationStats) string {
 	return "Warnings: " + strings.Join(parts, "; ") + "."
 }
 
-func (c *DefaultDiscord) postBiBProgress(channelID string, info simc.BiBRunInfo) {
-	msg := fmt.Sprintf("BiB **#%d** (%s) — %s · %d/%d sims",
+func (c *DefaultDiscord) postSimProgress(channelID string, info simc.RunInfo) {
+	msg := fmt.Sprintf("sim **#%d** (%s) — %s · %d/%d sims",
 		info.ID, info.Requester, info.Phase, info.CompletedSims, info.TotalSims)
 	if err := c.WriteMessage(channelID, msg); err != nil {
-		c.logger.WarnW("post bib progress", "run", info.ID, "error", err)
+		c.logger.WarnW("post sim progress", "run", info.ID, "error", err)
 	}
 }
 
-func (c *DefaultDiscord) postBiBOutcome(channelID string, info simc.BiBRunInfo, res *simc.BiBResult, runErr error) {
+func (c *DefaultDiscord) postSimOutcome(channelID string, info simc.RunInfo, res *simc.RunResult, runErr error) {
 	if runErr != nil {
-		_ = c.WriteMessage(channelID, fmt.Sprintf("BiB **#%d** (%s) %s: `%s`",
+		_ = c.WriteMessage(channelID, fmt.Sprintf("sim **#%d** (%s) %s: `%s`",
 			info.ID, info.Requester, info.Status, truncate(runErr.Error(), 500)))
 		return
 	}
 	if res == nil {
-		_ = c.WriteMessage(channelID, fmt.Sprintf("BiB **#%d** (%s) finished but produced no result.", info.ID, info.Requester))
+		_ = c.WriteMessage(channelID, fmt.Sprintf("sim **#%d** (%s) finished but produced no result.", info.ID, info.Requester))
 		return
 	}
-	embed := buildBiBEmbed(info, res)
+	embed := buildSimEmbed(c, info, res)
 	send := &discordgo.MessageSend{
-		Content: fmt.Sprintf("BiB **#%d** complete for **%s**.", info.ID, info.Requester),
+		Content: fmt.Sprintf("sim **#%d** complete for **%s**.", info.ID, info.Requester),
 		Embeds:  []*discordgo.MessageEmbed{embed},
 	}
 	if _, err := c.session.ChannelMessageSendComplex(channelID, send); err != nil {
-		c.logger.ErrorW("post bib outcome", "run", info.ID, "error", err)
+		c.logger.ErrorW("post sim outcome", "run", info.ID, "error", err)
 	}
 }
 
-func buildBiBEmbed(info simc.BiBRunInfo, res *simc.BiBResult) *discordgo.MessageEmbed {
+func buildSimEmbed(c *DefaultDiscord, info simc.RunInfo, res *simc.RunResult) *discordgo.MessageEmbed {
 	var sb strings.Builder
 	sb.WriteString("```\n")
 	writeFightSummary(&sb, "Patchwerk    ", res.Patchwerk)
@@ -209,14 +245,14 @@ func buildBiBEmbed(info simc.BiBRunInfo, res *simc.BiBResult) *discordgo.Message
 	if len(pwChanges) > 0 {
 		sb.WriteString("Patchwerk slot changes:\n")
 		for _, ch := range pwChanges {
-			sb.WriteString("  " + formatSlotChange(ch) + "\n")
+			sb.WriteString("  " + c.formatSlotChange(ch) + "\n")
 		}
 		sb.WriteString("\n")
 	}
 	if len(dsChanges) > 0 {
 		sb.WriteString("Dungeon Slice slot changes:\n")
 		for _, ch := range dsChanges {
-			sb.WriteString("  " + formatSlotChange(ch) + "\n")
+			sb.WriteString("  " + c.formatSlotChange(ch) + "\n")
 		}
 		sb.WriteString("\n")
 	}
@@ -224,7 +260,7 @@ func buildBiBEmbed(info simc.BiBRunInfo, res *simc.BiBResult) *discordgo.Message
 		res.CombinationCount, info.TotalSims, info.Duration.Round(time.Second)))
 	sb.WriteString("```")
 	return &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("Best in Bags #%d — %s", info.ID, info.Requester),
+		Title:       fmt.Sprintf("Sim #%d — %s", info.ID, info.Requester),
 		Description: sb.String(),
 		Color:       embedColor,
 	}
@@ -261,17 +297,22 @@ func changedSlots(changes []simc.SlotChange) []simc.SlotChange {
 	return out
 }
 
-func formatSlotChange(ch simc.SlotChange) string {
-	return fmt.Sprintf("%-9s  %s  →  %s", ch.Slot, formatItemList(ch.Current), formatItemList(ch.Best))
+func (c *DefaultDiscord) formatSlotChange(ch simc.SlotChange) string {
+	return fmt.Sprintf("%-9s  %s  →  %s", ch.Slot, c.formatItemList(ch.Current), c.formatItemList(ch.Best))
 }
 
-func formatItemList(items []simc.Item) string {
+func (c *DefaultDiscord) formatItemList(items []simc.Item) string {
 	if len(items) == 0 {
 		return "(empty)"
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	parts := make([]string, 0, len(items))
 	for _, it := range items {
 		name := it.Name
+		if name == "" && c.simcNames != nil {
+			name = c.simcNames.Resolve(ctx, it.ItemID)
+		}
 		if name == "" {
 			name = fmt.Sprintf("id:%d", it.ItemID)
 		}
@@ -281,24 +322,24 @@ func formatItemList(items []simc.Item) string {
 }
 
 func (c *DefaultDiscord) cmdSimcStatus() (cmdResponse, error) {
-	bibSnap := c.simcBiB.Stats()
+	orchSnap := c.simcOrch.Stats()
 	queueSnap := c.simcQueue.Stats()
 
-	if bibSnap.Running == nil && len(bibSnap.Pending) == 0 && queueSnap.Running == nil && len(queueSnap.Queued) == 0 {
+	if orchSnap.Running == nil && len(orchSnap.Pending) == 0 && queueSnap.Running == nil && len(queueSnap.Queued) == 0 {
 		return cmdResponse{content: "SimC is idle."}, nil
 	}
 
 	var sb strings.Builder
 	sb.WriteString("```\n")
-	if bibSnap.Running != nil {
-		r := bibSnap.Running
-		sb.WriteString(fmt.Sprintf("BiB running: #%d  %s\n", r.ID, r.Requester))
+	if orchSnap.Running != nil {
+		r := orchSnap.Running
+		sb.WriteString(fmt.Sprintf("Sim running: #%d  %s\n", r.ID, r.Requester))
 		sb.WriteString(fmt.Sprintf("             %s · %d/%d sims · %s elapsed\n",
 			r.Phase, r.CompletedSims, r.TotalSims, time.Since(r.StartedAt).Round(time.Second)))
 	}
-	if len(bibSnap.Pending) > 0 {
-		sb.WriteString(fmt.Sprintf("BiB queued: %d\n", len(bibSnap.Pending)))
-		for _, p := range bibSnap.Pending {
+	if len(orchSnap.Pending) > 0 {
+		sb.WriteString(fmt.Sprintf("Sim queued: %d\n", len(orchSnap.Pending)))
+		for _, p := range orchSnap.Pending {
 			sb.WriteString(fmt.Sprintf("   #%d  %s  (waiting %s)\n",
 				p.ID, p.Requester, time.Since(p.SubmittedAt).Round(time.Second)))
 		}
@@ -317,14 +358,14 @@ func (c *DefaultDiscord) cmdSimcStatus() (cmdResponse, error) {
 }
 
 func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
-	bibSnap := c.simcBiB.Stats()
+	orchSnap := c.simcOrch.Stats()
 	queueSnap := c.simcQueue.Stats()
 
 	var sb strings.Builder
 	sb.WriteString("```\n")
-	if bibSnap.Running != nil {
-		r := bibSnap.Running
-		sb.WriteString(fmt.Sprintf("BiB:    #%d  %s\n", r.ID, r.Requester))
+	if orchSnap.Running != nil {
+		r := orchSnap.Running
+		sb.WriteString(fmt.Sprintf("Sim:    #%d  %s\n", r.ID, r.Requester))
 		sb.WriteString(fmt.Sprintf("        %s · %d/%d sims · %s elapsed\n",
 			r.Phase, r.CompletedSims, r.TotalSims, time.Since(r.StartedAt).Round(time.Second)))
 		if r.BestPatchwerk > 0 {
@@ -333,8 +374,8 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 		if r.BestDungeonSlice > 0 {
 			sb.WriteString(fmt.Sprintf("        best DS so far: %s\n", formatDPS(r.BestDungeonSlice)))
 		}
-	} else if len(bibSnap.Pending) == 0 {
-		sb.WriteString("BiB:    (idle)\n")
+	} else if len(orchSnap.Pending) == 0 {
+		sb.WriteString("Sim:    (idle)\n")
 	}
 
 	if queueSnap.Running != nil {
@@ -365,9 +406,9 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 	sb.WriteString(fmt.Sprintf("\nLifetime sims:  %d ok · %d failed · %d canceled\n",
 		queueSnap.TotalCompleted, queueSnap.TotalFailed, queueSnap.TotalCanceled))
 
-	if len(bibSnap.Recent) > 0 {
-		sb.WriteString("Recent BiB runs:\n")
-		for _, r := range bibSnap.Recent {
+	if len(orchSnap.Recent) > 0 {
+		sb.WriteString("Recent sim runs:\n")
+		for _, r := range orchSnap.Recent {
 			sb.WriteString(fmt.Sprintf("   #%-4d  %-8s  %-10s  %-15s  PW %s  DS %s\n",
 				r.ID, r.Status, r.Duration.Round(time.Second), r.Requester,
 				formatDPS(r.BestPatchwerk), formatDPS(r.BestDungeonSlice),
@@ -386,19 +427,19 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 
 func (c *DefaultDiscord) cmdSimcCancel(args []string) (cmdResponse, error) {
 	if len(args) == 0 {
-		return cmdResponse{content: "Usage: `!simc cancel <bib_id>`"}, nil
+		return cmdResponse{content: "Usage: `!simc cancel <id>`"}, nil
 	}
 	id, err := strconv.ParseUint(strings.TrimPrefix(args[0], "#"), 10, 64)
 	if err != nil {
 		return cmdResponse{content: fmt.Sprintf("Bad ID %q.", args[0])}, nil
 	}
-	if err := c.simcBiB.Cancel(simc.BiBRunID(id)); err != nil {
+	if err := c.simcOrch.Cancel(simc.RunID(id)); err != nil {
 		if errors.Is(err, simc.ErrJobNotFound) {
-			return cmdResponse{content: fmt.Sprintf("No active BiB run #%d.", id)}, nil
+			return cmdResponse{content: fmt.Sprintf("No active sim #%d.", id)}, nil
 		}
 		return cmdResponse{}, err
 	}
-	return cmdResponse{content: fmt.Sprintf("Cancel requested for BiB #%d.", id)}, nil
+	return cmdResponse{content: fmt.Sprintf("Cancel requested for sim #%d.", id)}, nil
 }
 
 func looksLikeSimcAttachment(name string) bool {
@@ -460,18 +501,18 @@ func truncate(s string, n int) string {
 }
 
 func simcUsage() string {
-	return `**SimC Best-in-Bags Commands**` + "\n```" + `
+	return `**SimC sim Commands**` + "\n```" + `
 !simc run
     Attach your /simc dump (or paste it directly — Discord auto-converts
     large pastes into a message.txt attachment).
-    Runs Best-in-Bags across all hero/myth bag combinations, sim'd at both
+    Runs across all hero/myth bag combinations, sim'd at both
     Patchwerk and Dungeon Slice. Hero items are rescaled to 276, myth to 289.
     Gems and enchants are stripped for an apples-to-apples comparison.
     Long runtime expected — minutes to hours depending on candidate count.
 
-!simc status         Show BiB run + sim queue state
+!simc status         Show Active sims and queue state
 !simc stats          Detailed runtime + container resource stats
-!simc cancel <id>    Cancel a queued or running BiB run
+!simc cancel <id>    Cancel a queued or running sim
 !simc help           Show this message
 ` + "```"
 }

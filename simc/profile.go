@@ -11,7 +11,7 @@ import (
 )
 
 // addonSlotMap maps each addon slot keyword to our Slot enum. Slots not in
-// this map are ignored by BiB (shirt, tabard, ranged, etc.).
+// this map are ignored by (shirt, tabard, ranged, etc.).
 var addonSlotMap = map[string]Slot{
 	"head":      SlotHead,
 	"neck":      SlotNeck,
@@ -37,10 +37,20 @@ var addonSlotMap = map[string]Slot{
 // (bag items are commented). The slot key is captured.
 var itemLineRE = regexp.MustCompile(`^#?\s*([a-z_0-9]+)=,(.*)$`)
 
-// commentItemMetaRE captures the human-readable comment immediately preceding
-// each item line, e.g. "# Resilient Loop of the Eternal (272 Hero 7/8)".
-// We pull out the name, ilvl, and track.
-var commentItemMetaRE = regexp.MustCompile(`^#\s*(.+?)\s*\((\d+)\s+([A-Za-z]+)`)
+// trackInCommentRE finds an ilvl + track pair in a comment line. The TWW
+// addon used "# Name (276 Hero 7/8)" — both pieces present.
+var trackInCommentRE = regexp.MustCompile(`\b(\d{2,3})\s+(Hero|Myth|Champion|Veteran|Adventurer|Explorer)\b`)
+
+// ilvlInCommentRE finds a bare ilvl in a comment line. The Midnight addon
+// shortened comments to "# Name (276)" — no track keyword. We pair this
+// with inferTrackFromIlvl as the fallback.
+var ilvlInCommentRE = regexp.MustCompile(`[(\[](\d{2,3})[)\]]`)
+
+// commentNameRE pulls the item name from a comment line. We accept any
+// number of leading '#' (some addon versions emit '##') and take everything
+// up to the first '(' or '[' as the name. Requires a bracket so the lazy
+// match doesn't degenerate to a single character.
+var commentNameRE = regexp.MustCompile(`^#+\s*(.+?)\s*[(\[]`)
 
 // Profile is the parsed addon dump. Header holds the character/talents/etc.
 // lines that we replicate verbatim into every generated combination.
@@ -64,14 +74,72 @@ func (p Profile) EquippedBySlot() map[Slot][]Item {
 	return out
 }
 
-// CandidatesBySlot returns BiB-eligible items (hero + myth track) grouped
+// classDeclRE matches a class declaration line (e.g. priest="Askrlol").
+var classDeclRE = regexp.MustCompile(`^(deathknight|demonhunter|druid|evoker|hunter|mage|monk|paladin|priest|rogue|shaman|warlock|warrior)="([^"]+)"`)
+
+// kvLineRE matches simple `key=value` header lines.
+var kvLineRE = regexp.MustCompile(`^([a-z_]+)=([^\n]+)$`)
+
+// CharacterName returns the character name from the class declaration line.
+func (p Profile) CharacterName() string {
+	for _, line := range p.Header {
+		if m := classDeclRE.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			return m[2]
+		}
+	}
+	return ""
+}
+
+// ClassName returns the class identifier (e.g. "priest") from the class
+// declaration line.
+func (p Profile) ClassName() string {
+	for _, line := range p.Header {
+		if m := classDeclRE.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// Realm returns the value of `server=`.
+func (p Profile) Realm() string { return p.headerValue("server") }
+
+// Spec returns the value of `spec=`.
+func (p Profile) Spec() string { return p.headerValue("spec") }
+
+// Region returns the value of `region=`.
+func (p Profile) Region() string { return p.headerValue("region") }
+
+func (p Profile) headerValue(key string) string {
+	for _, line := range p.Header {
+		t := strings.TrimSpace(line)
+		if m := kvLineRE.FindStringSubmatch(t); m != nil && m[1] == key {
+			return strings.TrimSpace(m[2])
+		}
+	}
+	return ""
+}
+
+// CandidatesBySlot returns sim-eligible items (hero + myth track) grouped
 // by slot. Equipped items are included as candidates. Duplicates by
-// fingerprint are removed.
+// fingerprint are removed. Slots the user does NOT have equipped are
+// dropped entirely — this avoids generating combinations like
+// "2H staff + off-hand" which simc rejects.
 func (p Profile) CandidatesBySlot() map[Slot][]Item {
+	equippedSlots := make(map[Slot]bool)
+	for _, it := range p.Items {
+		if it.Equipped {
+			equippedSlots[it.Slot] = true
+		}
+	}
+
 	out := make(map[Slot][]Item)
 	seen := make(map[string]map[string]bool)
 	for _, it := range p.Items {
-		if !it.Track.IsBiBEligible() {
+		if !equippedSlots[it.Slot] {
+			continue
+		}
+		if !it.Track.IsEligible() {
 			continue
 		}
 		if _, ok := seen[it.Slot.String()]; !ok {
@@ -136,6 +204,12 @@ func ParseProfile(b []byte) (*Profile, error) {
 
 		it := parseItemFields(slot, slotKey, equipped, fields)
 		applyCommentMeta(&it, lastComment)
+		// Fallback: if the comment didn't yield a track but we have an ilvl,
+		// infer the track from the ilvl bands. This catches addon variants
+		// that omit the track keyword from their comment.
+		if it.Track == TrackUnknown && it.OriginalIlvl > 0 {
+			it.Track = inferTrackFromIlvl(it.OriginalIlvl)
+		}
 		lastComment = ""
 		p.Items = append(p.Items, it)
 	}
@@ -174,9 +248,12 @@ func parseItemFields(slot Slot, slotKey string, equipped bool, fields string) It
 			it.CraftedStats = v
 		case "context":
 			it.Context = v
-		case "gem_id", "gems", "enchant_id", "enchant", "ilevel":
-			// Strip per spec: gems and enchants always, ilevel because we
-			// re-emit our own.
+		case "gem_id", "gems":
+			it.GemIDs = v
+		case "enchant_id", "enchant":
+			it.EnchantID = v
+		case "ilevel":
+			// Skipped — we re-emit our own based on EffectiveIlvl.
 		default:
 			it.Extras = append(it.Extras, token)
 		}
@@ -185,20 +262,46 @@ func parseItemFields(slot Slot, slotKey string, equipped bool, fields string) It
 }
 
 // applyCommentMeta extracts ilvl + track from the comment line just above
-// the item, e.g. "# Some Item Name (272 Hero 7/8)".
+// the item. Tries the explicit "ilvl + Track" format first (TWW addon),
+// falls back to "(ilvl)" alone (Midnight addon) where track is inferred
+// from ilvl bands by the caller.
 func applyCommentMeta(it *Item, comment string) {
 	if comment == "" {
 		return
 	}
-	m := commentItemMetaRE.FindStringSubmatch(comment)
-	if m == nil {
-		return
+	if m := trackInCommentRE.FindStringSubmatch(comment); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			it.OriginalIlvl = n
+		}
+		it.Track = parseTrack(m[2])
+	} else if m := ilvlInCommentRE.FindStringSubmatch(comment); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			it.OriginalIlvl = n
+		}
 	}
-	it.Name = strings.TrimSpace(m[1])
-	if n, err := strconv.Atoi(m[2]); err == nil {
-		it.OriginalIlvl = n
+	if m := commentNameRE.FindStringSubmatch(comment); m != nil {
+		it.Name = strings.TrimSpace(m[1])
 	}
-	it.Track = parseTrack(m[3])
+}
+
+// inferTrackFromIlvl returns a Track based on a Midnight S1 ilvl threshold.
+// Used as a fallback when the addon comment is missing or the regex didn't
+// pick up a track keyword. Boundaries are deliberately conservative — items
+// below 252 are excluded from anyway.
+func inferTrackFromIlvl(ilvl int) Track {
+	switch {
+	case ilvl >= 278:
+		return TrackMyth
+	case ilvl >= 252:
+		return TrackHero
+	case ilvl >= 226:
+		return TrackChampion
+	case ilvl >= 213:
+		return TrackVeteran
+	case ilvl >= 200:
+		return TrackAdventurer
+	}
+	return TrackUnknown
 }
 
 func parseTrack(s string) Track {

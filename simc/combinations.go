@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// bibSlotOrder is the canonical order slots are emitted in a generated
+// slotOrder is the canonical order slots are emitted in a generated
 // profile, matching the addon's typical layout.
-var bibSlotOrder = []Slot{
+var slotOrder = []Slot{
 	SlotHead, SlotNeck, SlotShoulders, SlotBack, SlotChest, SlotWrists,
 	SlotHands, SlotWaist, SlotLegs, SlotFeet,
 	SlotFinger, SlotTrinket,
@@ -27,7 +27,7 @@ type Loadout struct {
 // fingerprint is a stable identity for de-dup detection.
 func (l Loadout) fingerprint() string {
 	var parts []string
-	for _, s := range bibSlotOrder {
+	for _, s := range slotOrder {
 		items := l.Items[s]
 		fps := make([]string, 0, len(items))
 		for _, it := range items {
@@ -43,7 +43,7 @@ func (l Loadout) fingerprint() string {
 // two lines (finger1/finger2, trinket1/trinket2) are emitted in stable order.
 func (l Loadout) Render() string {
 	var sb strings.Builder
-	for _, s := range bibSlotOrder {
+	for _, s := range slotOrder {
 		items, ok := l.Items[s]
 		if !ok || len(items) == 0 {
 			continue
@@ -81,7 +81,7 @@ type CombinationStats struct {
 // AnalyzeCandidates returns counts and the total combination size.
 func AnalyzeCandidates(cands map[Slot][]Item) CombinationStats {
 	stats := CombinationStats{BySlot: make(map[Slot]int), Total: 1}
-	for _, s := range bibSlotOrder {
+	for _, s := range slotOrder {
 		items := cands[s]
 		stats.BySlot[s] = len(items)
 		var opts int
@@ -119,8 +119,8 @@ func GenerateCombinations(cands map[Slot][]Item, maxCombos int) ([]Loadout, Comb
 		return nil, stats, fmt.Errorf("combination space too large: %d candidates exceeds cap of %d", stats.Total, maxCombos)
 	}
 
-	options := make(map[Slot][][]Item, len(bibSlotOrder))
-	for _, s := range bibSlotOrder {
+	options := make(map[Slot][][]Item, len(slotOrder))
+	for _, s := range slotOrder {
 		items := cands[s]
 		if s.IsDoubleSlot() {
 			options[s] = doubleSlotOptions(items)
@@ -131,12 +131,12 @@ func GenerateCombinations(cands map[Slot][]Item, maxCombos int) ([]Loadout, Comb
 
 	var out []Loadout
 	cur := Loadout{Items: make(map[Slot][]Item)}
-	bibCombine(0, options, cur, &out)
+	combineSlots(0, options, cur, &out)
 	return out, stats, nil
 }
 
-func bibCombine(i int, options map[Slot][][]Item, cur Loadout, out *[]Loadout) {
-	if i == len(bibSlotOrder) {
+func combineSlots(i int, options map[Slot][][]Item, cur Loadout, out *[]Loadout) {
+	if i == len(slotOrder) {
 		// Copy to detach from the cursor.
 		clone := Loadout{Items: make(map[Slot][]Item, len(cur.Items))}
 		for k, v := range cur.Items {
@@ -146,10 +146,10 @@ func bibCombine(i int, options map[Slot][][]Item, cur Loadout, out *[]Loadout) {
 		*out = append(*out, clone)
 		return
 	}
-	slot := bibSlotOrder[i]
+	slot := slotOrder[i]
 	opts := options[slot]
 	if len(opts) == 0 {
-		bibCombine(i+1, options, cur, out)
+		combineSlots(i+1, options, cur, out)
 		return
 	}
 	for _, choice := range opts {
@@ -158,7 +158,7 @@ func bibCombine(i int, options map[Slot][][]Item, cur Loadout, out *[]Loadout) {
 		} else {
 			cur.Items[slot] = choice
 		}
-		bibCombine(i+1, options, cur, out)
+		combineSlots(i+1, options, cur, out)
 	}
 	delete(cur.Items, slot)
 }
