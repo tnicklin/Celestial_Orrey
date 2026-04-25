@@ -13,24 +13,24 @@ func TestVaultRewardTable_GetThreshold(t *testing.T) {
 		wantIsMH  bool
 	}{
 		{
-			name:      "max key level",
+			name:      "max key level (rewards cap at +10)",
 			keyLevel:  18,
-			wantILvl:  282,
-			wantTrack: "Myth 4/6",
+			wantILvl:  272,
+			wantTrack: "Myth 1/6",
 			wantIsMH:  true,
 		},
 		{
-			name:      "myth 3",
+			name:      "key 15 still capped at Myth 1/6",
 			keyLevel:  15,
-			wantILvl:  279,
-			wantTrack: "Myth 3/6",
+			wantILvl:  272,
+			wantTrack: "Myth 1/6",
 			wantIsMH:  true,
 		},
 		{
-			name:      "myth 2",
+			name:      "key 12 still capped at Myth 1/6",
 			keyLevel:  12,
-			wantILvl:  276,
-			wantTrack: "Myth 2/6",
+			wantILvl:  272,
+			wantTrack: "Myth 1/6",
 			wantIsMH:  true,
 		},
 		{
@@ -76,10 +76,10 @@ func TestVaultRewardTable_GetThreshold(t *testing.T) {
 			wantIsMH:  false,
 		},
 		{
-			name:      "above max caps at max",
+			name:      "above max caps at +10 reward",
 			keyLevel:  25,
-			wantILvl:  282,
-			wantTrack: "Myth 4/6",
+			wantILvl:  272,
+			wantTrack: "Myth 1/6",
 			wantIsMH:  true,
 		},
 		{
@@ -121,9 +121,9 @@ func TestVaultRewardTable_GetItemLevel(t *testing.T) {
 		wantILvl int
 	}{
 		{
-			name:     "max key level",
+			name:     "max key level (rewards cap at +10)",
 			keyLevel: 18,
-			wantILvl: 282,
+			wantILvl: 272,
 		},
 		{
 			name:     "myth 1",
