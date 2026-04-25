@@ -1,0 +1,607 @@
+package simc
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/tnicklin/celestial_orrey/logger"
+)
+
+// BiBConfig tunes the Best-in-Bags orchestrator.
+type BiBConfig struct {
+	RankPassIterations  int           `yaml:"rank_pass_iterations"`
+	FinalPassIterations int           `yaml:"final_pass_iterations"`
+	TopN                int           `yaml:"top_n"`
+	MaxCombinations     int           `yaml:"max_combinations"`
+	ProgressEvery       int           `yaml:"progress_every"`
+	ProgressMinInterval time.Duration `yaml:"progress_min_interval"`
+	HistorySize         int           `yaml:"history_size"`
+}
+
+// Defaults applies default values to the BiB config.
+func (c *BiBConfig) Defaults() {
+	if c.RankPassIterations <= 0 {
+		c.RankPassIterations = 1000
+	}
+	if c.FinalPassIterations <= 0 {
+		c.FinalPassIterations = 10000
+	}
+	if c.TopN <= 0 {
+		c.TopN = 10
+	}
+	if c.MaxCombinations <= 0 {
+		c.MaxCombinations = 50000
+	}
+	if c.ProgressEvery <= 0 {
+		c.ProgressEvery = 50
+	}
+	if c.ProgressMinInterval <= 0 {
+		c.ProgressMinInterval = 2 * time.Minute
+	}
+	if c.HistorySize <= 0 {
+		c.HistorySize = 5
+	}
+}
+
+// BiBRunID identifies a single Best-in-Bags request.
+type BiBRunID uint64
+
+// ProgressFunc is invoked when the orchestrator wants to surface progress
+// to the user. Implementations should not block.
+type ProgressFunc func(BiBRunInfo)
+
+// CompletionFunc is invoked exactly once when a BiB run terminates (success,
+// failure, or cancellation).
+type CompletionFunc func(BiBRunInfo, *BiBResult, error)
+
+// BiBRunInfo is the user-facing snapshot of a single BiB run.
+type BiBRunInfo struct {
+	ID               BiBRunID      `json:"id"`
+	Requester        string        `json:"requester"`
+	Phase            string        `json:"phase"`
+	SubmittedAt      time.Time     `json:"submitted_at"`
+	StartedAt        time.Time     `json:"started_at"`
+	FinishedAt       time.Time     `json:"finished_at,omitempty"`
+	TotalSims        int           `json:"total_sims"`
+	CompletedSims    int           `json:"completed_sims"`
+	BestPatchwerk    float64       `json:"best_patchwerk_dps"`
+	BestDungeonSlice float64       `json:"best_dungeon_slice_dps"`
+	Status           BiBRunStatus  `json:"status"`
+	ErrMsg           string        `json:"err_msg,omitempty"`
+	Duration         time.Duration `json:"duration,omitempty"`
+}
+
+// BiBRunStatus is the terminal or in-progress state of a BiB run.
+type BiBRunStatus string
+
+const (
+	BiBStatusQueued    BiBRunStatus = "queued"
+	BiBStatusRunning   BiBRunStatus = "running"
+	BiBStatusOK        BiBRunStatus = "ok"
+	BiBStatusFailed    BiBRunStatus = "failed"
+	BiBStatusCanceled  BiBRunStatus = "canceled"
+)
+
+// BiBResult is the final output of a successful BiB run.
+type BiBResult struct {
+	RunID            BiBRunID
+	Patchwerk        FightStyleResult
+	DungeonSlice     FightStyleResult
+	CombinationCount int
+	BaselineProfile  []byte
+	Duration         time.Duration
+	Stats            CombinationStats
+}
+
+// FightStyleResult holds the baseline + best DPS plus the slot diff for a
+// single fight style.
+type FightStyleResult struct {
+	FightStyle  FightStyle
+	BaselineDPS float64
+	BestDPS     float64
+	DeltaDPS    float64
+	DeltaPct    float64
+	BestLoadout Loadout
+	BestProfile []byte
+	SlotChanges []SlotChange
+}
+
+// SlotChange describes the per-slot diff between currently equipped and the
+// winning loadout.
+type SlotChange struct {
+	Slot    Slot
+	Current []Item // 1 or 2 items (finger/trinket)
+	Best    []Item
+	Changed bool
+}
+
+// BiBSnapshot is exported via Stats() for the discord !simc stats command.
+type BiBSnapshot struct {
+	Running *BiBRunInfo   `json:"running,omitempty"`
+	Pending []BiBRunInfo  `json:"pending"`
+	Recent  []BiBRunInfo  `json:"recent"`
+}
+
+// BiBService orchestrates Best-in-Bags runs.
+type BiBService interface {
+	Submit(profile []byte, requester string, onProgress ProgressFunc, onDone CompletionFunc) (BiBRunID, error)
+	Cancel(id BiBRunID) error
+	Stats() BiBSnapshot
+	Start(ctx context.Context) error
+	Stop()
+}
+
+// BiBServiceParams holds dependencies.
+type BiBServiceParams struct {
+	Config BiBConfig
+	Queue  Queue
+	Logger logger.Logger
+}
+
+// DefaultBiBService is the concrete BiB orchestrator. One run executes at a
+// time; further submissions queue.
+type DefaultBiBService struct {
+	cfg    BiBConfig
+	queue  Queue
+	logger logger.Logger
+
+	mu       sync.Mutex
+	nextID   BiBRunID
+	pending  []*bibEnvelope
+	running  *bibEnvelope
+	recent   []BiBRunInfo
+	wake     chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	canceled atomic.Bool
+}
+
+var _ BiBService = (*DefaultBiBService)(nil)
+
+type bibEnvelope struct {
+	info       BiBRunInfo
+	profile    []byte
+	onProgress ProgressFunc
+	onDone     CompletionFunc
+	cancel     context.CancelFunc
+}
+
+// NewBiBService constructs the orchestrator.
+func NewBiBService(p BiBServiceParams) *DefaultBiBService {
+	p.Config.Defaults()
+	return &DefaultBiBService{
+		cfg:    p.Config,
+		queue:  p.Queue,
+		logger: p.Logger,
+		wake:   make(chan struct{}, 1),
+	}
+}
+
+// Start launches the worker.
+func (s *DefaultBiBService) Start(_ context.Context) error {
+	if s.queue == nil {
+		return errors.New("simc: bib service requires a queue")
+	}
+	s.stop = make(chan struct{})
+	s.done = make(chan struct{})
+	go s.workerLoop()
+	return nil
+}
+
+// Stop signals the worker to exit. Any in-flight BiB run is canceled.
+func (s *DefaultBiBService) Stop() {
+	if s.stop == nil {
+		return
+	}
+	close(s.stop)
+	s.mu.Lock()
+	if s.running != nil && s.running.cancel != nil {
+		s.running.cancel()
+	}
+	s.mu.Unlock()
+	<-s.done
+}
+
+// Submit enqueues a new BiB request and returns its assigned ID. The
+// onProgress and onDone callbacks may be nil.
+func (s *DefaultBiBService) Submit(profile []byte, requester string, onProgress ProgressFunc, onDone CompletionFunc) (BiBRunID, error) {
+	if len(profile) == 0 {
+		return 0, errors.New("simc: empty profile")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	id := s.nextID
+	env := &bibEnvelope{
+		info: BiBRunInfo{
+			ID:          id,
+			Requester:   requester,
+			SubmittedAt: time.Now(),
+			Status:      BiBStatusQueued,
+			Phase:       "queued",
+		},
+		profile:    profile,
+		onProgress: onProgress,
+		onDone:     onDone,
+	}
+	s.pending = append(s.pending, env)
+	s.wakeWorker()
+	return id, nil
+}
+
+// Cancel cancels a pending or in-flight BiB run.
+func (s *DefaultBiBService) Cancel(id BiBRunID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running != nil && s.running.info.ID == id {
+		if s.running.cancel != nil {
+			s.running.cancel()
+		}
+		return nil
+	}
+	for i, env := range s.pending {
+		if env.info.ID != id {
+			continue
+		}
+		s.pending = append(s.pending[:i], s.pending[i+1:]...)
+		env.info.Status = BiBStatusCanceled
+		env.info.FinishedAt = time.Now()
+		s.recordRecentLocked(env.info)
+		if env.onDone != nil {
+			go env.onDone(env.info, nil, errors.New("canceled before start"))
+		}
+		return nil
+	}
+	return ErrJobNotFound
+}
+
+// Stats returns a snapshot for the bot's status command.
+func (s *DefaultBiBService) Stats() BiBSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := BiBSnapshot{}
+	if s.running != nil {
+		ri := s.running.info
+		snap.Running = &ri
+	}
+	for _, e := range s.pending {
+		snap.Pending = append(snap.Pending, e.info)
+	}
+	snap.Recent = append(snap.Recent, s.recent...)
+	return snap
+}
+
+func (s *DefaultBiBService) wakeWorker() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *DefaultBiBService) workerLoop() {
+	defer close(s.done)
+	for {
+		select {
+		case <-s.stop:
+			s.drainPending()
+			return
+		case <-s.wake:
+		}
+		for {
+			env := s.popNextLocked()
+			if env == nil {
+				break
+			}
+			s.executeRun(env)
+		}
+	}
+}
+
+func (s *DefaultBiBService) drainPending() {
+	s.mu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.mu.Unlock()
+	for _, env := range pending {
+		env.info.Status = BiBStatusCanceled
+		env.info.FinishedAt = time.Now()
+		s.mu.Lock()
+		s.recordRecentLocked(env.info)
+		s.mu.Unlock()
+		if env.onDone != nil {
+			env.onDone(env.info, nil, errors.New("service stopping"))
+		}
+	}
+}
+
+func (s *DefaultBiBService) popNextLocked() *bibEnvelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running != nil || len(s.pending) == 0 {
+		return nil
+	}
+	env := s.pending[0]
+	s.pending = s.pending[1:]
+	s.running = env
+	env.info.Status = BiBStatusRunning
+	env.info.StartedAt = time.Now()
+	env.info.Phase = "starting"
+	return env
+}
+
+func (s *DefaultBiBService) executeRun(env *bibEnvelope) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	env.cancel = cancel
+	s.mu.Unlock()
+	defer cancel()
+
+	res, err := s.runOnce(ctx, env)
+
+	s.mu.Lock()
+	env.info.FinishedAt = time.Now()
+	env.info.Duration = env.info.FinishedAt.Sub(env.info.StartedAt)
+	switch {
+	case err == nil:
+		env.info.Status = BiBStatusOK
+		env.info.Phase = "completed"
+	case errors.Is(err, context.Canceled):
+		env.info.Status = BiBStatusCanceled
+		env.info.Phase = "canceled"
+	default:
+		env.info.Status = BiBStatusFailed
+		env.info.Phase = "failed"
+		env.info.ErrMsg = err.Error()
+	}
+	s.recordRecentLocked(env.info)
+	s.running = nil
+	hasMore := len(s.pending) > 0
+	infoCopy := env.info
+	s.mu.Unlock()
+
+	if env.onDone != nil {
+		env.onDone(infoCopy, res, err)
+	}
+	if hasMore {
+		s.wakeWorker()
+	}
+}
+
+func (s *DefaultBiBService) recordRecentLocked(info BiBRunInfo) {
+	s.recent = append([]BiBRunInfo{info}, s.recent...)
+	if len(s.recent) > s.cfg.HistorySize {
+		s.recent = s.recent[:s.cfg.HistorySize]
+	}
+}
+
+// runOnce executes the full BiB pipeline for a single submitted request.
+func (s *DefaultBiBService) runOnce(ctx context.Context, env *bibEnvelope) (*BiBResult, error) {
+	profile, err := ParseProfile(env.profile)
+	if err != nil {
+		return nil, fmt.Errorf("parse profile: %w", err)
+	}
+	cands := profile.CandidatesBySlot()
+	combos, stats, err := GenerateCombinations(cands, s.cfg.MaxCombinations)
+	if err != nil {
+		return nil, err
+	}
+	totalPerStyle := len(combos) + 1 // +1 for baseline
+	if s.cfg.TopN > 0 && len(combos) > s.cfg.TopN {
+		totalPerStyle += s.cfg.TopN
+	}
+	totalSims := totalPerStyle * 2 // patchwerk + dungeon_slice
+
+	s.updateInfo(env, func(i *BiBRunInfo) {
+		i.TotalSims = totalSims
+		i.Phase = fmt.Sprintf("starting (%d combinations × 2 styles)", len(combos))
+	})
+
+	baseline := BuildEquippedBaseline(profile)
+
+	res := &BiBResult{
+		RunID:            env.info.ID,
+		CombinationCount: len(combos),
+		BaselineProfile:  baseline,
+		Stats:            stats,
+	}
+
+	for _, fs := range []FightStyle{FightStylePatchwerk, FightStyleDungeonSlice} {
+		styleResult, err := s.runFightStyle(ctx, env, profile, baseline, combos, fs)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", fs, err)
+		}
+		switch fs {
+		case FightStylePatchwerk:
+			res.Patchwerk = styleResult
+			s.updateInfo(env, func(i *BiBRunInfo) { i.BestPatchwerk = styleResult.BestDPS })
+		case FightStyleDungeonSlice:
+			res.DungeonSlice = styleResult
+			s.updateInfo(env, func(i *BiBRunInfo) { i.BestDungeonSlice = styleResult.BestDPS })
+		}
+	}
+
+	res.Duration = time.Since(env.info.StartedAt)
+	return res, nil
+}
+
+// runFightStyle runs the baseline, the rank pass, and the final pass for a
+// single fight style.
+func (s *DefaultBiBService) runFightStyle(ctx context.Context, env *bibEnvelope, profile *Profile, baseline []byte, combos []Loadout, fs FightStyle) (FightStyleResult, error) {
+	out := FightStyleResult{FightStyle: fs}
+
+	s.updateInfo(env, func(i *BiBRunInfo) { i.Phase = fmt.Sprintf("baseline (%s)", fs) })
+	baselineRes, err := s.runOne(ctx, env, baseline, fs, s.cfg.FinalPassIterations)
+	if err != nil {
+		return out, fmt.Errorf("baseline: %w", err)
+	}
+	out.BaselineDPS = baselineRes.DPS
+
+	type comboScore struct {
+		idx int
+		dps float64
+	}
+	scores := make([]comboScore, 0, len(combos))
+
+	lastProgress := time.Now()
+	for i, combo := range combos {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		body := BuildProfile(profile, combo)
+		r, err := s.runOne(ctx, env, body, fs, s.cfg.RankPassIterations)
+		if err != nil {
+			return out, fmt.Errorf("rank pass combo %d: %w", i, err)
+		}
+		scores = append(scores, comboScore{idx: i, dps: r.DPS})
+
+		s.bumpCompleted(env)
+		if (i+1)%s.cfg.ProgressEvery == 0 && time.Since(lastProgress) >= s.cfg.ProgressMinInterval {
+			lastProgress = time.Now()
+			s.updateInfo(env, func(info *BiBRunInfo) {
+				info.Phase = fmt.Sprintf("rank pass %s (%d/%d)", fs, i+1, len(combos))
+			})
+			s.notifyProgress(env)
+		}
+	}
+
+	sort.Slice(scores, func(a, b int) bool { return scores[a].dps > scores[b].dps })
+	topN := s.cfg.TopN
+	if topN > len(scores) {
+		topN = len(scores)
+	}
+
+	bestIdx := -1
+	bestDPS := 0.0
+	if topN > 0 {
+		s.updateInfo(env, func(i *BiBRunInfo) { i.Phase = fmt.Sprintf("final pass %s (top %d)", fs, topN) })
+		for k := 0; k < topN; k++ {
+			if err := ctx.Err(); err != nil {
+				return out, err
+			}
+			combo := combos[scores[k].idx]
+			body := BuildProfile(profile, combo)
+			r, err := s.runOne(ctx, env, body, fs, s.cfg.FinalPassIterations)
+			if err != nil {
+				return out, fmt.Errorf("final pass combo %d: %w", scores[k].idx, err)
+			}
+			if r.DPS > bestDPS {
+				bestDPS = r.DPS
+				bestIdx = scores[k].idx
+			}
+			s.bumpCompleted(env)
+		}
+	} else if len(scores) > 0 {
+		bestIdx = scores[0].idx
+		bestDPS = scores[0].dps
+	}
+
+	if bestIdx < 0 {
+		return out, errors.New("no winning combination")
+	}
+	bestLoadout := combos[bestIdx]
+	out.BestLoadout = bestLoadout
+	out.BestDPS = bestDPS
+	out.DeltaDPS = bestDPS - out.BaselineDPS
+	if out.BaselineDPS > 0 {
+		out.DeltaPct = out.DeltaDPS / out.BaselineDPS * 100
+	}
+	out.BestProfile = BuildProfile(profile, bestLoadout)
+	out.SlotChanges = computeSlotChanges(profile, bestLoadout)
+	return out, nil
+}
+
+// runOne submits a single sim through the queue and waits for its outcome.
+func (s *DefaultBiBService) runOne(ctx context.Context, env *bibEnvelope, body []byte, fs FightStyle, iters int) (SimResult, error) {
+	id, _, err := s.queue.Submit(SimRequest{
+		Profile:    body,
+		FightStyle: fs,
+		Iterations: iters,
+	}, fmt.Sprintf("bib#%d/%s", env.info.ID, env.info.Requester))
+	if err != nil {
+		return SimResult{}, err
+	}
+	ch := s.queue.Subscribe(id)
+	select {
+	case <-ctx.Done():
+		_ = s.queue.Cancel(id)
+		<-ch
+		return SimResult{}, ctx.Err()
+	case outcome, ok := <-ch:
+		if !ok {
+			return SimResult{}, errors.New("no outcome received")
+		}
+		switch outcome.Status {
+		case JobStatusOK:
+			return outcome.Result, nil
+		default:
+			if outcome.Err != nil {
+				return SimResult{}, outcome.Err
+			}
+			return SimResult{}, fmt.Errorf("sim status %s", outcome.Status)
+		}
+	}
+}
+
+func (s *DefaultBiBService) bumpCompleted(env *bibEnvelope) {
+	s.updateInfo(env, func(i *BiBRunInfo) { i.CompletedSims++ })
+}
+
+func (s *DefaultBiBService) updateInfo(env *bibEnvelope, mut func(*BiBRunInfo)) {
+	s.mu.Lock()
+	mut(&env.info)
+	s.mu.Unlock()
+}
+
+func (s *DefaultBiBService) notifyProgress(env *bibEnvelope) {
+	if env.onProgress == nil {
+		return
+	}
+	s.mu.Lock()
+	info := env.info
+	s.mu.Unlock()
+	go env.onProgress(info)
+}
+
+func computeSlotChanges(profile *Profile, best Loadout) []SlotChange {
+	equipped := profile.EquippedBySlot()
+	var changes []SlotChange
+	for _, slot := range bibSlotOrder {
+		cur := equipped[slot]
+		bst := best.Items[slot]
+		ch := SlotChange{
+			Slot:    slot,
+			Current: cur,
+			Best:    bst,
+			Changed: !sameItems(cur, bst),
+		}
+		changes = append(changes, ch)
+	}
+	return changes
+}
+
+func sameItems(a, b []Item) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	aFP := make([]string, len(a))
+	bFP := make([]string, len(b))
+	for i := range a {
+		aFP[i] = a[i].fingerprint()
+	}
+	for i := range b {
+		bFP[i] = b[i].fingerprint()
+	}
+	sort.Strings(aFP)
+	sort.Strings(bFP)
+	for i := range aFP {
+		if aFP[i] != bFP[i] {
+			return false
+		}
+	}
+	return true
+}

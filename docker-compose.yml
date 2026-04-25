@@ -5,6 +5,10 @@ services:
     container_name: celestial-orrey
     restart: unless-stopped
     stop_grace_period: 35s
+    cpus: 4.0
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 256
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro

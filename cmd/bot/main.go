@@ -15,6 +15,7 @@ import (
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/raiderio"
 	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
+	"github.com/tnicklin/celestial_orrey/simc"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/warcraftlogs"
 	"go.uber.org/config"
@@ -37,6 +38,8 @@ type appConfig struct {
 	WarcraftLogs warcraftlogs.Config `yaml:"warcraftlogs"`
 	Store        store.Config        `yaml:"store"`
 	ElvUI        elvui.Config        `yaml:"elvui"`
+	Simc         simc.Config         `yaml:"simc"`
+	SimcBiB      simc.BiBConfig      `yaml:"simc_bib"`
 }
 
 type result struct {
@@ -51,6 +54,10 @@ type result struct {
 	WarcraftLogs  warcraftlogs.WCL
 	WCLPoller     warcraftlogs.Poller
 	ElvUIPoller   elvui.Poller
+	SimcRunner    *simc.Runner
+	SimcQueue     *simc.DefaultQueue
+	SimcBiB       *simc.DefaultBiBService
+	SimcStats     *simc.StatsServer
 	DiscordClient discord.Discord
 }
 
@@ -105,11 +112,34 @@ func build() (result, error) {
 		Interval: 5 * time.Minute,
 	})
 
+	simcRunner := simc.NewRunner(simc.RunnerParams{
+		Config: cfg.Simc,
+		Logger: appLogger,
+	})
+	simcQueue := simc.NewQueue(simc.QueueParams{
+		Config: cfg.Simc,
+		Runner: simcRunner,
+		Logger: appLogger,
+	})
+	simcBiB := simc.NewBiBService(simc.BiBServiceParams{
+		Config: cfg.SimcBiB,
+		Queue:  simcQueue,
+		Logger: appLogger,
+	})
+	simcStats := simc.NewStatsServer(simc.StatsServerParams{
+		Addr:   cfg.Simc.StatsHTTPAddr,
+		Queue:  simcQueue,
+		Logger: appLogger,
+	})
+
 	discordClient, err := discord.New(discord.Params{
 		Config:       cfg.Discord,
 		Store:        st,
 		RaiderIO:     rio,
 		WarcraftLogs: wclClient,
+		SimcQueue:    simcQueue,
+		SimcBiB:      simcBiB,
+		SimcConfig:   cfg.Simc,
 		Logger:       appLogger,
 		Clock:        ntpClock,
 	})
@@ -141,6 +171,10 @@ func build() (result, error) {
 		WarcraftLogs:  wclClient,
 		WCLPoller:     wclPoller,
 		ElvUIPoller:   elvuiPoller,
+		SimcRunner:    simcRunner,
+		SimcQueue:     simcQueue,
+		SimcBiB:       simcBiB,
+		SimcStats:     simcStats,
 	}, nil
 }
 
@@ -156,6 +190,9 @@ type runParams struct {
 	WarcraftLogs  warcraftlogs.WCL
 	WCLPoller     warcraftlogs.Poller
 	ElvUIPoller   elvui.Poller
+	SimcQueue     *simc.DefaultQueue
+	SimcBiB       *simc.DefaultBiBService
+	SimcStats     *simc.StatsServer
 	DiscordClient discord.Discord
 	Logger        logger.Logger
 }
@@ -239,6 +276,45 @@ func run(p runParams) error {
 		},
 		OnStop: func(_ context.Context) error {
 			p.ElvUIPoller.Stop()
+			return nil
+		},
+	})
+
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if err := p.SimcQueue.Start(ctx); err != nil {
+				return fmt.Errorf("start simc queue: %w", err)
+			}
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.SimcQueue.Stop()
+			return nil
+		},
+	})
+
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if err := p.SimcBiB.Start(ctx); err != nil {
+				return fmt.Errorf("start simc bib: %w", err)
+			}
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.SimcBiB.Stop()
+			return nil
+		},
+	})
+
+	p.Lifecycle.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if err := p.SimcStats.Start(ctx); err != nil {
+				return fmt.Errorf("start simc stats server: %w", err)
+			}
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			p.SimcStats.Stop()
 			return nil
 		},
 	})

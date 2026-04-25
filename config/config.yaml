@@ -16,3 +16,27 @@ raiderio:
 store:
   path: data/celestial_orrey.db
   backup_dir: data/backup
+
+simc:
+  binary_path: /usr/local/bin/simc
+  work_dir: /app/data/simc
+  threads: 4
+  default_iterations: 10000
+  max_iterations: 50000
+  job_timeout: 30m
+  max_queue_depth: 4
+  report_retention: 24h
+  history_size: 20
+  stats_http_addr: 127.0.0.1:9090
+  max_profile_bytes: 1048576
+  sample_interval: 2s
+  cgroup_root: /sys/fs/cgroup
+
+simc_bib:
+  rank_pass_iterations: 1000
+  final_pass_iterations: 10000
+  top_n: 10
+  max_combinations: 50000
+  progress_every: 50
+  progress_min_interval: 2m
+  history_size: 5
