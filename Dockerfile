@@ -1,17 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
 # --- build simc from source --------------------------------------------------
+# We build only the engine via its legacy Makefile. The top-level CMakeLists
+# pulls in the Qt GUI subdir unconditionally, which fails without Qt5/Qt6
+# installed; the make path skips the GUI entirely and is what the official
+# simc Docker images use.
 FROM debian:bookworm-slim AS simc-build
 ARG SIMC_TAG=thewarwithin
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git build-essential cmake ca-certificates \
+        git build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch ${SIMC_TAG} \
         https://github.com/simulationcraft/simc.git /src/simc
-WORKDIR /src/simc
-RUN cmake -DCMAKE_BUILD_TYPE=Release -DSC_NO_NETWORKING=ON -B build \
-    && cmake --build build -j"$(nproc)" --target simc
+WORKDIR /src/simc/engine
+RUN make optimized OS=UNIX SC_NO_NETWORKING=1 -j"$(nproc)"
 
 # --- build the bot -----------------------------------------------------------
 FROM golang:1.25-bookworm AS build
@@ -42,7 +45,7 @@ RUN useradd -r -u 1000 -g users appuser \
 
 WORKDIR /app
 
-COPY --from=simc-build /src/simc/build/simc /usr/local/bin/simc
+COPY --from=simc-build /src/simc/engine/simc /usr/local/bin/simc
 COPY --from=build /out/celestial-orrey /app/celestial-orrey
 COPY store/schema/migrations /app/store/schema/migrations
 COPY config/config.yaml /app/config/config.yaml
