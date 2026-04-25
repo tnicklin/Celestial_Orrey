@@ -34,10 +34,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata sqlite3 \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata sqlite3 locales \
+    && sed -i 's/^# *\(C.UTF-8\)/\1/' /etc/locale.gen \
+    && locale-gen \
     && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=America/Los_Angeles
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 RUN useradd -r -u 1000 -g users appuser \
     && mkdir -p /app/data /app/data/simc /app/config /app/store/schema/migrations \

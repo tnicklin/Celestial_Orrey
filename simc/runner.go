@@ -61,10 +61,9 @@ func (r *Runner) Run(ctx context.Context, args RunArgs) (SimResult, error) {
 
 	inputPath := filepath.Join(jobDir, "input.simc")
 	jsonPath := filepath.Join(jobDir, "output.json")
-	htmlPath := filepath.Join(jobDir, "report.html")
 	logPath := filepath.Join(jobDir, "simc.log")
 
-	if err := r.writeInput(inputPath, jsonPath, htmlPath, args.Request); err != nil {
+	if err := r.writeInput(inputPath, jsonPath, args.Request); err != nil {
 		return SimResult{}, err
 	}
 
@@ -110,7 +109,6 @@ func (r *Runner) Run(ctx context.Context, args RunArgs) (SimResult, error) {
 	}
 	res.JobID = args.JobID
 	res.Duration = duration
-	res.ReportPath = htmlPath
 	res.JSONPath = jsonPath
 	res.FightStyle = args.Request.FightStyle
 
@@ -165,7 +163,7 @@ func (r *Runner) prepareJobDir(args RunArgs) (string, error) {
 	return dir, nil
 }
 
-func (r *Runner) writeInput(inputPath, jsonPath, htmlPath string, req SimRequest) error {
+func (r *Runner) writeInput(inputPath, jsonPath string, req SimRequest) error {
 	iterations := req.Iterations
 	if iterations <= 0 {
 		iterations = r.cfg.DefaultIterations
@@ -184,12 +182,13 @@ func (r *Runner) writeInput(inputPath, jsonPath, htmlPath string, req SimRequest
 		buf.WriteByte('\n')
 	}
 	// Override block goes last so user-supplied values can't shadow our caps.
+	// We intentionally do NOT emit `html=` — the slim runtime image lacks
+	// locale data, and HTML reports are not used by the bot anyway.
 	fmt.Fprintf(&buf, "\n# --- celestial-orrey overrides ---\n")
 	fmt.Fprintf(&buf, "threads=%d\n", r.cfg.Threads)
 	fmt.Fprintf(&buf, "iterations=%d\n", iterations)
 	fmt.Fprintf(&buf, "fight_style=%s\n", style)
 	fmt.Fprintf(&buf, "json2=%s\n", jsonPath)
-	fmt.Fprintf(&buf, "html=%s\n", htmlPath)
 
 	if err := os.WriteFile(inputPath, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("write input: %w", err)
