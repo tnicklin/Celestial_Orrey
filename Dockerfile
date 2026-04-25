@@ -6,7 +6,7 @@
 # installed; the make path skips the GUI entirely and is what the official
 # simc Docker images use.
 FROM debian:bookworm-slim AS simc-build
-ARG SIMC_TAG=thewarwithin
+ARG SIMC_TAG=midnight
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git build-essential ca-certificates \
