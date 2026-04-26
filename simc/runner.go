@@ -175,6 +175,23 @@ func (r *Runner) writeInput(inputPath, jsonPath string, req SimRequest) error {
 	if style == "" {
 		style = FightStylePatchwerk
 	}
+	// Resolve internal style label (e.g. Patchwerk5T) to actual simc
+	// fight_style + multi-target/duration knobs. Per-request overrides
+	// on SimRequest take precedence so callers can tweak without
+	// editing the spec table.
+	spec := FightStyleSpecFor(style)
+	simcStyle := spec.SimcStyle
+	if simcStyle == "" {
+		simcStyle = string(style)
+	}
+	maxTimeSec := req.MaxTimeSec
+	if maxTimeSec == 0 {
+		maxTimeSec = spec.MaxTimeSec
+	}
+	desiredTargets := req.DesiredTargets
+	if desiredTargets == 0 {
+		desiredTargets = spec.DesiredTargets
+	}
 
 	var buf bytes.Buffer
 	buf.Write(req.Profile)
@@ -190,7 +207,13 @@ func (r *Runner) writeInput(inputPath, jsonPath string, req SimRequest) error {
 	if req.TargetError > 0 {
 		fmt.Fprintf(&buf, "target_error=%g\n", req.TargetError)
 	}
-	fmt.Fprintf(&buf, "fight_style=%s\n", style)
+	if maxTimeSec > 0 {
+		fmt.Fprintf(&buf, "max_time=%d\n", maxTimeSec)
+	}
+	if desiredTargets > 1 {
+		fmt.Fprintf(&buf, "desired_targets=%d\n", desiredTargets)
+	}
+	fmt.Fprintf(&buf, "fight_style=%s\n", simcStyle)
 	fmt.Fprintf(&buf, "json2=%s\n", jsonPath)
 
 	if err := os.WriteFile(inputPath, buf.Bytes(), 0o644); err != nil {

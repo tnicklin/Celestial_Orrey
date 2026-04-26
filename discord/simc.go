@@ -243,55 +243,42 @@ func (c *DefaultDiscord) postSimOutcome(channelID string, info simc.RunInfo, res
 func buildSimEmbed(c *DefaultDiscord, info simc.RunInfo, res *simc.RunResult) *discordgo.MessageEmbed {
 	var sb strings.Builder
 	sb.WriteString("```\n")
-	writeFightSummary(&sb, "Patchwerk    ", res.Patchwerk)
-	sb.WriteString("\n")
-	writeFightSummary(&sb, "Dungeon Slice", res.DungeonSlice)
-	sb.WriteString("\n")
+	for _, fs := range simc.FightStyleOrder {
+		sr, ok := res.Styles[fs]
+		if !ok {
+			continue
+		}
+		writeFightSummary(&sb, fmt.Sprintf("%-13s", simc.FightStyleLabel(fs)), sr)
+		sb.WriteString("\n")
+	}
 
-	pwChanges := changedSlots(res.Patchwerk.SlotChanges)
-	dsChanges := changedSlots(res.DungeonSlice.SlotChanges)
-
-	if len(pwChanges) > 0 {
-		sb.WriteString("Patchwerk slot changes:\n")
-		for _, ch := range pwChanges {
-			sb.WriteString("  " + c.formatSlotChange(ch) + "\n")
+	for _, fs := range simc.FightStyleOrder {
+		sr, ok := res.Styles[fs]
+		if !ok {
+			continue
 		}
-		sb.WriteString("\n")
-	}
-	if len(dsChanges) > 0 {
-		sb.WriteString("Dungeon Slice slot changes:\n")
-		for _, ch := range dsChanges {
-			sb.WriteString("  " + c.formatSlotChange(ch) + "\n")
+		label := simc.FightStyleLabel(fs)
+		if changes := changedSlots(sr.SlotChanges); len(changes) > 0 {
+			fmt.Fprintf(&sb, "%s slot changes:\n", label)
+			for _, ch := range changes {
+				sb.WriteString("  " + c.formatSlotChange(ch) + "\n")
+			}
+			sb.WriteString("\n")
 		}
-		sb.WriteString("\n")
-	}
-	if len(res.Patchwerk.GemChanges) > 0 {
-		sb.WriteString("Patchwerk gem changes:\n")
-		for _, ch := range res.Patchwerk.GemChanges {
-			sb.WriteString("  " + c.formatGemChange(ch) + "\n")
+		if len(sr.GemChanges) > 0 {
+			fmt.Fprintf(&sb, "%s gem changes:\n", label)
+			for _, ch := range sr.GemChanges {
+				sb.WriteString("  " + c.formatGemChange(ch) + "\n")
+			}
+			sb.WriteString("\n")
 		}
-		sb.WriteString("\n")
-	}
-	if len(res.Patchwerk.EnchantChanges) > 0 {
-		sb.WriteString("Patchwerk enchant changes:\n")
-		for _, ch := range res.Patchwerk.EnchantChanges {
-			sb.WriteString("  " + c.formatEnchantChange(ch) + "\n")
+		if len(sr.EnchantChanges) > 0 {
+			fmt.Fprintf(&sb, "%s enchant changes:\n", label)
+			for _, ch := range sr.EnchantChanges {
+				sb.WriteString("  " + c.formatEnchantChange(ch) + "\n")
+			}
+			sb.WriteString("\n")
 		}
-		sb.WriteString("\n")
-	}
-	if len(res.DungeonSlice.GemChanges) > 0 {
-		sb.WriteString("Dungeon Slice gem changes:\n")
-		for _, ch := range res.DungeonSlice.GemChanges {
-			sb.WriteString("  " + c.formatGemChange(ch) + "\n")
-		}
-		sb.WriteString("\n")
-	}
-	if len(res.DungeonSlice.EnchantChanges) > 0 {
-		sb.WriteString("Dungeon Slice enchant changes:\n")
-		for _, ch := range res.DungeonSlice.EnchantChanges {
-			sb.WriteString("  " + c.formatEnchantChange(ch) + "\n")
-		}
-		sb.WriteString("\n")
 	}
 	sb.WriteString(fmt.Sprintf("Candidates: %d  ·  Total sims: %d  ·  Duration: %s\n",
 		res.CandidateCount, info.TotalSims, info.Duration.Round(time.Second)))
@@ -465,11 +452,10 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 		sb.WriteString(fmt.Sprintf("Sim:    #%d  %s\n", r.ID, r.DisplayName()))
 		sb.WriteString(fmt.Sprintf("        %s · %d/%d sims · %s elapsed\n",
 			r.Phase, r.CompletedSims, r.TotalSims, time.Since(r.StartedAt).Round(time.Second)))
-		if r.BestPatchwerk > 0 {
-			sb.WriteString(fmt.Sprintf("        best PW so far: %s\n", formatDPS(r.BestPatchwerk)))
-		}
-		if r.BestDungeonSlice > 0 {
-			sb.WriteString(fmt.Sprintf("        best DS so far: %s\n", formatDPS(r.BestDungeonSlice)))
+		for _, fs := range simc.FightStyleOrder {
+			if dps, ok := r.BestDPS[fs]; ok && dps > 0 {
+				sb.WriteString(fmt.Sprintf("        best %s so far: %s\n", simc.FightStyleLabel(fs), formatDPS(dps)))
+			}
 		}
 	} else if len(orchSnap.Pending) == 0 {
 		sb.WriteString("Sim:    (idle)\n")
@@ -505,9 +491,14 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 	if len(orchSnap.Recent) > 0 {
 		sb.WriteString("Recent sim runs:\n")
 		for _, r := range orchSnap.Recent {
-			sb.WriteString(fmt.Sprintf("   #%-4d  %-8s  %-10s  %-15s  PW %s  DS %s\n",
+			parts := []string{}
+			for _, fs := range simc.FightStyleOrder {
+				dps := r.BestDPS[fs]
+				parts = append(parts, fmt.Sprintf("%s %s", shortStyleLabel(fs), formatDPS(dps)))
+			}
+			sb.WriteString(fmt.Sprintf("   #%-4d  %-8s  %-10s  %-15s  %s\n",
 				r.ID, r.Status, r.Duration.Round(time.Second), r.Requester,
-				formatDPS(r.BestPatchwerk), formatDPS(r.BestDungeonSlice),
+				strings.Join(parts, " · "),
 			))
 		}
 	}
@@ -536,6 +527,20 @@ func (c *DefaultDiscord) cmdSimcCancel(args []string) (cmdResponse, error) {
 		return cmdResponse{}, err
 	}
 	return cmdResponse{content: fmt.Sprintf("Cancel requested for sim #%d.", id)}, nil
+}
+
+// shortStyleLabel is a 2-3 char tag for compact rows in the recent-runs
+// table. Long-form FightStyleLabel is used for headers.
+func shortStyleLabel(fs simc.FightStyle) string {
+	switch fs {
+	case simc.FightStylePatchwerk:
+		return "PW"
+	case simc.FightStylePatchwerk5T:
+		return "5T"
+	case simc.FightStyleDungeonSlice:
+		return "DS"
+	}
+	return string(fs)
 }
 
 func looksLikeSimcAttachment(name string) bool {

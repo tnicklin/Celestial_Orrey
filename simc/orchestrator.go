@@ -61,22 +61,21 @@ type CompletionFunc func(RunInfo, *RunResult, error)
 
 // RunInfo is the user-facing snapshot of a single run.
 type RunInfo struct {
-	ID               RunID      `json:"id"`
-	Requester        string        `json:"requester"`
-	CharacterName    string        `json:"character_name,omitempty"`
-	ClassName        string        `json:"class_name,omitempty"`
-	Spec             string        `json:"spec,omitempty"`
-	Phase            string        `json:"phase"`
-	SubmittedAt      time.Time     `json:"submitted_at"`
-	StartedAt        time.Time     `json:"started_at"`
-	FinishedAt       time.Time     `json:"finished_at,omitempty"`
-	TotalSims        int           `json:"total_sims"`
-	CompletedSims    int           `json:"completed_sims"`
-	BestPatchwerk    float64       `json:"best_patchwerk_dps"`
-	BestDungeonSlice float64       `json:"best_dungeon_slice_dps"`
-	Status           RunStatus  `json:"status"`
-	ErrMsg           string        `json:"err_msg,omitempty"`
-	Duration         time.Duration `json:"duration,omitempty"`
+	ID               RunID                 `json:"id"`
+	Requester        string                `json:"requester"`
+	CharacterName    string                `json:"character_name,omitempty"`
+	ClassName        string                `json:"class_name,omitempty"`
+	Spec             string                `json:"spec,omitempty"`
+	Phase            string                `json:"phase"`
+	SubmittedAt      time.Time             `json:"submitted_at"`
+	StartedAt        time.Time             `json:"started_at"`
+	FinishedAt       time.Time             `json:"finished_at,omitempty"`
+	TotalSims        int                   `json:"total_sims"`
+	CompletedSims    int                   `json:"completed_sims"`
+	BestDPS          map[FightStyle]float64 `json:"best_dps,omitempty"`
+	Status           RunStatus             `json:"status"`
+	ErrMsg           string                `json:"err_msg,omitempty"`
+	Duration         time.Duration         `json:"duration,omitempty"`
 }
 
 // DisplayName returns the character name when known, falling back to
@@ -103,8 +102,7 @@ const (
 // RunResult is the final output of a successful run.
 type RunResult struct {
 	RunID            RunID
-	Patchwerk        FightStyleResult
-	DungeonSlice     FightStyleResult
+	Styles           map[FightStyle]FightStyleResult
 	CandidateCount   int
 	BaselineProfile  []byte
 	Duration         time.Duration
@@ -419,38 +417,39 @@ func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*R
 	crossMax := MaxCrossProductSims(MaxCrossProductSlots)
 	gemEnchantMax := MaxGemEnchantSims(estimatedPostGreedyLoadout(profile, cands), profile.ClassName(), profile.Spec())
 	perStyle := 2 + greedyMax + crossMax + gemEnchantMax
-	totalSims := perStyle * 2 // patchwerk + dungeon_slice
+	totalSims := perStyle * len(FightStyleOrder)
 
 	s.updateInfo(env, func(i *RunInfo) {
 		i.TotalSims = totalSims
 		i.CharacterName = profile.CharacterName()
 		i.ClassName = profile.ClassName()
 		i.Spec = profile.Spec()
-		i.Phase = fmt.Sprintf("starting (%d candidates × 2 styles)", candidateCount)
+		i.Phase = fmt.Sprintf("starting (%d candidates × %d styles)", candidateCount, len(FightStyleOrder))
 	})
 
 	baseline := BuildEquippedBaseline(profile)
 
 	res := &RunResult{
 		RunID:           env.info.ID,
+		Styles:          make(map[FightStyle]FightStyleResult, len(FightStyleOrder)),
 		CandidateCount:  candidateCount,
 		BaselineProfile: baseline,
 		Stats:           stats,
 	}
 
-	for _, fs := range []FightStyle{FightStylePatchwerk, FightStyleDungeonSlice} {
+	for _, fs := range FightStyleOrder {
 		styleResult, err := s.runFightStyle(ctx, env, profile, baseline, cands, fs)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", fs, err)
 		}
-		switch fs {
-		case FightStylePatchwerk:
-			res.Patchwerk = styleResult
-			s.updateInfo(env, func(i *RunInfo) { i.BestPatchwerk = styleResult.BestDPS })
-		case FightStyleDungeonSlice:
-			res.DungeonSlice = styleResult
-			s.updateInfo(env, func(i *RunInfo) { i.BestDungeonSlice = styleResult.BestDPS })
-		}
+		res.Styles[fs] = styleResult
+		fsCopy := fs
+		s.updateInfo(env, func(i *RunInfo) {
+			if i.BestDPS == nil {
+				i.BestDPS = make(map[FightStyle]float64, len(FightStyleOrder))
+			}
+			i.BestDPS[fsCopy] = styleResult.BestDPS
+		})
 	}
 
 	res.Duration = time.Since(env.info.StartedAt)
@@ -509,10 +508,10 @@ func (s *DefaultOrchestrator) buildReport(env *runEnvelope, profile *Profile, re
 				FewerThanTwo: slotNames(res.Stats.DoubleEmpty),
 			},
 		},
-		FightStyles: map[FightStyle]FightStyleReport{
-			FightStylePatchwerk:    res.Patchwerk.Report,
-			FightStyleDungeonSlice: res.DungeonSlice.Report,
-		},
+		FightStyles: make(map[FightStyle]FightStyleReport, len(res.Styles)),
+	}
+	for fs, sr := range res.Styles {
+		rep.FightStyles[fs] = sr.Report
 	}
 	rep.Totals = aggregateTotals(rep.FightStyles)
 	return rep
