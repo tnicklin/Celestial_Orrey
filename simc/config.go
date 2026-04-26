@@ -7,6 +7,7 @@ type Config struct {
 	BinaryPath        string        `yaml:"binary_path"`
 	WorkDir           string        `yaml:"work_dir"`
 	Threads           int           `yaml:"threads"`
+	Workers           int           `yaml:"workers"`
 	DefaultIterations int           `yaml:"default_iterations"`
 	MaxIterations     int           `yaml:"max_iterations"`
 	JobTimeout        time.Duration `yaml:"job_timeout"`
@@ -29,6 +30,9 @@ func (c *Config) Defaults() {
 	}
 	if c.Threads <= 0 {
 		c.Threads = 4
+	}
+	if c.Workers <= 0 {
+		c.Workers = 1
 	}
 	if c.DefaultIterations <= 0 {
 		c.DefaultIterations = 10000

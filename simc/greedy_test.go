@@ -26,6 +26,8 @@ func newFakeRunner(scores map[int]float64) *fakeSimRunner {
 	return &fakeSimRunner{scores: scores}
 }
 
+func (f *fakeSimRunner) Concurrency() int { return 4 }
+
 func (f *fakeSimRunner) Run(_ context.Context, body []byte, _ FightStyle, _ int) (SimResult, error) {
 	f.mu.Lock()
 	f.calls++

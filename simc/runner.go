@@ -187,6 +187,9 @@ func (r *Runner) writeInput(inputPath, jsonPath string, req SimRequest) error {
 	fmt.Fprintf(&buf, "\n# --- celestial-orrey overrides ---\n")
 	fmt.Fprintf(&buf, "threads=%d\n", r.cfg.Threads)
 	fmt.Fprintf(&buf, "iterations=%d\n", iterations)
+	if req.TargetError > 0 {
+		fmt.Fprintf(&buf, "target_error=%g\n", req.TargetError)
+	}
 	fmt.Fprintf(&buf, "fight_style=%s\n", style)
 	fmt.Fprintf(&buf, "json2=%s\n", jsonPath)
 

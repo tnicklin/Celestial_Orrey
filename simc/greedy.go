@@ -2,14 +2,18 @@ package simc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
 // SimRunner dispatches a single sim and waits for the result. The
 // orchestrator implements this by submitting through its queue; tests
-// supply fakes that return canned DPS values.
+// supply fakes that return canned DPS values. Concurrency() reports
+// how many sims the runner can satisfy in parallel — greedy bounds
+// its per-slot fanout to this value so we never overflow the queue.
 type SimRunner interface {
 	Run(ctx context.Context, body []byte, fs FightStyle, iters int) (SimResult, error)
+	Concurrency() int
 }
 
 // GreedyTelemetry is what the optimizer reports back to its caller for
@@ -129,26 +133,18 @@ func seedLoadout(p *Profile, cands map[Slot][]Item) Loadout {
 func pickSingleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, items []Item, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (bool, error) {
 	pool := mergeWithCurrent(items, cur.Items[slot])
 
-	bestDPS := -1.0
-	var bestItem Item
-	for _, c := range pool {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
+	bodies := make([][]byte, len(pool))
+	for i, c := range pool {
 		trial := withSlot(cur, slot, []Item{c})
-		body := BuildProfile(p, trial)
-		r, err := runner.Run(ctx, body, fs, iters)
-		if err != nil {
-			return false, fmt.Errorf("sim slot %s id=%d: %w", slot, c.ItemID, err)
-		}
-		tel.SimsRun++
-		if r.DPS > bestDPS {
-			bestDPS = r.DPS
-			bestItem = c
-		}
+		bodies[i] = BuildProfile(p, trial)
+	}
+
+	bestIdx, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
+	if err != nil {
+		return false, err
 	}
 	prev := cur.Items[slot]
-	cur.Items[slot] = []Item{bestItem}
+	cur.Items[slot] = []Item{pool[bestIdx]}
 	return !sameItems(prev, cur.Items[slot]), nil
 }
 
@@ -200,12 +196,8 @@ func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 // bestForDoubleSlot iterates a candidate pool for one half of a double
 // slot, holding `held` in the other half. `primary` controls position.
 func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, pool []Item, held Item, primary bool, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (Item, error) {
-	bestDPS := -1.0
-	var winner Item
-	for _, c := range pool {
-		if err := ctx.Err(); err != nil {
-			return Item{}, err
-		}
+	bodies := make([][]byte, len(pool))
+	for i, c := range pool {
 		var pair []Item
 		if primary {
 			pair = []Item{c, held}
@@ -213,18 +205,80 @@ func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, 
 			pair = []Item{held, c}
 		}
 		trial := withSlot(cur, slot, pair)
-		body := BuildProfile(p, trial)
-		r, err := runner.Run(ctx, body, fs, iters)
-		if err != nil {
-			return Item{}, fmt.Errorf("sim slot %s id=%d: %w", slot, c.ItemID, err)
+		bodies[i] = BuildProfile(p, trial)
+	}
+	bestIdx, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
+	if err != nil {
+		return Item{}, err
+	}
+	return pool[bestIdx], nil
+}
+
+// runFanout sims the supplied bodies in parallel up to runner.Concurrency()
+// and returns the index of the highest-DPS result. The first runner error
+// short-circuits the rest. tel.SimsRun is incremented per successful sim.
+func runFanout(ctx context.Context, bodies [][]byte, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry, slot Slot) (int, error) {
+	type result struct {
+		idx int
+		dps float64
+		err error
+	}
+
+	conc := runner.Concurrency()
+	if conc < 1 {
+		conc = 1
+	}
+	if conc > len(bodies) {
+		conc = len(bodies)
+	}
+	sem := make(chan struct{}, conc)
+	results := make(chan result, len(bodies))
+
+	// Use a shared cancelable subcontext so the first error tears down
+	// the rest. We still wait for already-running goroutines to settle.
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for i, body := range bodies {
+		i, body := i, body
+		go func() {
+			select {
+			case sem <- struct{}{}:
+			case <-subCtx.Done():
+				results <- result{idx: i, err: subCtx.Err()}
+				return
+			}
+			defer func() { <-sem }()
+			r, err := runner.Run(subCtx, body, fs, iters)
+			results <- result{idx: i, dps: r.DPS, err: err}
+		}()
+	}
+
+	bestIdx := -1
+	bestDPS := -1.0
+	var firstErr error
+	for i := 0; i < len(bodies); i++ {
+		r := <-results
+		if r.err != nil {
+			if firstErr == nil && !errors.Is(r.err, context.Canceled) {
+				firstErr = fmt.Errorf("sim slot %s candidate %d: %w", slot, r.idx, r.err)
+				cancel()
+			}
+			continue
 		}
 		tel.SimsRun++
-		if r.DPS > bestDPS {
-			bestDPS = r.DPS
-			winner = c
+		if r.dps > bestDPS {
+			bestDPS = r.dps
+			bestIdx = r.idx
 		}
 	}
-	return winner, nil
+	if firstErr != nil {
+		return 0, firstErr
+	}
+	if bestIdx < 0 {
+		return 0, fmt.Errorf("sim slot %s: no successful candidate", slot)
+	}
+	return bestIdx, nil
 }
 
 // withSlot returns a shallow copy of l with `slot` replaced by `items`.

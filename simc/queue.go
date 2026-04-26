@@ -17,13 +17,14 @@ var ErrQueueFull = errors.New("simc: queue is full")
 // ErrJobNotFound is returned by Cancel when no matching job exists.
 var ErrJobNotFound = errors.New("simc: job not found")
 
-// Queue accepts simulation requests, runs them one at a time, and exposes
-// real-time stats.
+// Queue accepts simulation requests, runs them concurrently up to
+// cfg.Workers in parallel, and exposes real-time stats.
 type Queue interface {
 	Submit(req SimRequest, requester string) (jobID uint64, position int, err error)
 	Cancel(jobID uint64) error
 	Stats() Snapshot
 	Subscribe(jobID uint64) <-chan JobOutcome
+	Concurrency() int
 	Start(ctx context.Context) error
 	Stop()
 }
@@ -50,7 +51,9 @@ type jobEnvelope struct {
 	canceled    atomic.Bool
 }
 
-// DefaultQueue is the in-memory job queue used by the bot.
+// DefaultQueue is the in-memory job queue used by the bot. Up to
+// cfg.Workers jobs run concurrently; submissions beyond that wait in
+// the pending list.
 type DefaultQueue struct {
 	cfg    Config
 	runner SimExecutor
@@ -60,18 +63,20 @@ type DefaultQueue struct {
 	mu       sync.Mutex
 	nextID   uint64
 	pending  []*jobEnvelope
-	running  *jobEnvelope
+	running  map[uint64]*jobEnvelope
 	finished *historyRing
 
 	completed atomic.Uint64
 	failed    atomic.Uint64
 	canceled  atomic.Uint64
 
-	liveProc atomic.Pointer[ProcStats]
+	// liveProcs holds the most recent ProcStats sample per running job
+	// id. Workers store/delete; Stats() snapshots all live values.
+	liveProcs sync.Map // map[uint64]ProcStats
 
-	wake chan struct{}
-	stop chan struct{}
-	done chan struct{}
+	wake        chan struct{}
+	stop        chan struct{}
+	workersDone sync.WaitGroup
 
 	pruneStop chan struct{}
 	pruneDone chan struct{}
@@ -88,35 +93,40 @@ func NewQueue(p QueueParams) *DefaultQueue {
 		logger:   p.Logger,
 		cgroup:   NewCgroupSampler(p.Config.CgroupRoot),
 		finished: newHistoryRing(p.Config.HistorySize),
+		running:  make(map[uint64]*jobEnvelope),
 		wake:     make(chan struct{}, 1),
 	}
 }
 
-// Start launches the worker goroutine and the report-pruner.
+// Start launches cfg.Workers worker goroutines and the report-pruner.
 func (q *DefaultQueue) Start(_ context.Context) error {
 	if q.runner == nil {
 		return errors.New("simc: queue requires a runner")
 	}
 	q.stop = make(chan struct{})
-	q.done = make(chan struct{})
 	q.pruneStop = make(chan struct{})
 	q.pruneDone = make(chan struct{})
-	go q.workerLoop()
+	for i := 0; i < q.cfg.Workers; i++ {
+		q.workersDone.Add(1)
+		go q.workerLoop()
+	}
 	go q.pruneLoop()
 	return nil
 }
 
-// Stop signals the worker to exit and waits for it. Any in-flight job is
-// canceled via its context.
+// Stop signals all workers to exit and waits for them. Any in-flight
+// jobs are canceled via their contexts.
 func (q *DefaultQueue) Stop() {
 	if q.stop != nil {
 		close(q.stop)
 		q.mu.Lock()
-		if q.running != nil && q.running.cancel != nil {
-			q.running.cancel()
+		for _, env := range q.running {
+			if env.cancel != nil {
+				env.cancel()
+			}
 		}
 		q.mu.Unlock()
-		<-q.done
+		q.workersDone.Wait()
 	}
 	if q.pruneStop != nil {
 		close(q.pruneStop)
@@ -147,10 +157,7 @@ func (q *DefaultQueue) Submit(req SimRequest, requester string) (uint64, int, er
 		request: req,
 	}
 	q.pending = append(q.pending, env)
-	pos := len(q.pending)
-	if q.running != nil {
-		pos++
-	}
+	pos := len(q.pending) + len(q.running)
 	q.signalWorker()
 	return id, pos, nil
 }
@@ -160,10 +167,10 @@ func (q *DefaultQueue) Cancel(jobID uint64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if q.running != nil && q.running.info.ID == jobID {
-		q.running.canceled.Store(true)
-		if q.running.cancel != nil {
-			q.running.cancel()
+	if env, ok := q.running[jobID]; ok {
+		env.canceled.Store(true)
+		if env.cancel != nil {
+			env.cancel()
 		}
 		return nil
 	}
@@ -194,8 +201,8 @@ func (q *DefaultQueue) Subscribe(jobID uint64) <-chan JobOutcome {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	ch := make(chan JobOutcome, 1)
-	if q.running != nil && q.running.info.ID == jobID {
-		q.running.subscribers = append(q.running.subscribers, ch)
+	if env, ok := q.running[jobID]; ok {
+		env.subscribers = append(env.subscribers, ch)
 		return ch
 	}
 	for _, env := range q.pending {
@@ -212,10 +219,9 @@ func (q *DefaultQueue) Subscribe(jobID uint64) <-chan JobOutcome {
 // Stats returns a copy of the current subsystem state.
 func (q *DefaultQueue) Stats() Snapshot {
 	q.mu.Lock()
-	var running *JobInfo
-	if q.running != nil {
-		ri := q.running.info
-		running = &ri
+	running := make([]JobInfo, 0, len(q.running))
+	for _, env := range q.running {
+		running = append(running, env.info)
 	}
 	queued := make([]JobInfo, 0, len(q.pending))
 	for _, env := range q.pending {
@@ -223,7 +229,15 @@ func (q *DefaultQueue) Stats() Snapshot {
 	}
 	q.mu.Unlock()
 
-	snap := Snapshot{
+	var procs []ProcStats
+	q.liveProcs.Range(func(_, v any) bool {
+		if ps, ok := v.(ProcStats); ok {
+			procs = append(procs, ps)
+		}
+		return true
+	})
+
+	return Snapshot{
 		Running:        running,
 		Queued:         queued,
 		QueueDepth:     len(queued),
@@ -232,15 +246,14 @@ func (q *DefaultQueue) Stats() Snapshot {
 		TotalFailed:    q.failed.Load(),
 		TotalCanceled:  q.canceled.Load(),
 		Recent:         q.finished.Snapshot(),
+		Processes:      procs,
 		Container:      q.cgroup.Sample(),
 		GeneratedAt:    time.Now(),
 	}
-	if p := q.liveProc.Load(); p != nil {
-		copy := *p
-		snap.Process = &copy
-	}
-	return snap
 }
+
+// Concurrency returns the configured worker pool size.
+func (q *DefaultQueue) Concurrency() int { return q.cfg.Workers }
 
 func (q *DefaultQueue) signalWorker() {
 	select {
@@ -250,45 +263,38 @@ func (q *DefaultQueue) signalWorker() {
 }
 
 func (q *DefaultQueue) workerLoop() {
-	defer close(q.done)
+	defer q.workersDone.Done()
 	for {
 		select {
 		case <-q.stop:
-			q.drainPending()
 			return
 		case <-q.wake:
 		}
+		// Each wake might land any number of jobs at once; drain.
 		for {
-			env := q.popNextLocked()
+			env := q.popNext()
 			if env == nil {
 				break
 			}
 			q.execute(env)
+			// Wake another worker in case there's still pending work
+			// it could pick up.
+			q.signalWorker()
 		}
 	}
 }
 
-func (q *DefaultQueue) drainPending() {
-	q.mu.Lock()
-	pending := q.pending
-	q.pending = nil
-	q.mu.Unlock()
-	for _, env := range pending {
-		outcome := JobOutcome{JobID: env.info.ID, Status: JobStatusCanceled, Err: errors.New("queue stopped")}
-		q.deliverLocked(env, outcome)
-		q.canceled.Add(1)
-	}
-}
-
-func (q *DefaultQueue) popNextLocked() *jobEnvelope {
+// popNext claims the next pending job if there's capacity. Returns
+// nil if the queue is empty or already at cfg.Workers in flight.
+func (q *DefaultQueue) popNext() *jobEnvelope {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.running != nil || len(q.pending) == 0 {
+	if len(q.running) >= q.cfg.Workers || len(q.pending) == 0 {
 		return nil
 	}
 	env := q.pending[0]
 	q.pending = q.pending[1:]
-	q.running = env
+	q.running[env.info.ID] = env
 	env.info.StartedAt = time.Now()
 	return env
 }
@@ -300,16 +306,16 @@ func (q *DefaultQueue) execute(env *jobEnvelope) {
 	q.mu.Unlock()
 	defer cancel()
 
+	jobID := env.info.ID
 	args := RunArgs{
-		JobID:   env.info.ID,
+		JobID:   jobID,
 		Request: env.request,
 		OnSample: func(s ProcStats) {
-			cp := s
-			q.liveProc.Store(&cp)
+			q.liveProcs.Store(jobID, s)
 		},
 	}
 	res, err := q.runner.Run(ctx, args)
-	q.liveProc.Store(nil)
+	q.liveProcs.Delete(jobID)
 
 	finished := FinishedJob{
 		JobInfo:    env.info,
@@ -317,7 +323,7 @@ func (q *DefaultQueue) execute(env *jobEnvelope) {
 	}
 	finished.Duration = finished.FinishedAt.Sub(env.info.StartedAt)
 
-	outcome := JobOutcome{JobID: env.info.ID}
+	outcome := JobOutcome{JobID: jobID}
 	switch {
 	case err == nil:
 		outcome.Status = JobStatusOK
@@ -349,19 +355,13 @@ func (q *DefaultQueue) execute(env *jobEnvelope) {
 	q.finished.Push(finished)
 
 	q.mu.Lock()
-	q.running = nil
+	delete(q.running, jobID)
 	q.deliverLocked(env, outcome)
-	hasMore := len(q.pending) > 0
 	q.mu.Unlock()
-
-	if hasMore {
-		q.signalWorker()
-	}
 }
 
 // deliverLocked sends the outcome to every subscriber and closes the channels.
-// Caller must hold q.mu, except in workerLoop after q.running has been
-// detached.
+// Caller must hold q.mu.
 func (q *DefaultQueue) deliverLocked(env *jobEnvelope, outcome JobOutcome) {
 	for _, ch := range env.subscribers {
 		select {
@@ -398,8 +398,12 @@ func (q *DefaultQueue) pruneLoop() {
 // String returns a one-line debug summary.
 func (s Snapshot) String() string {
 	running := "idle"
-	if s.Running != nil {
-		running = fmt.Sprintf("#%d %s", s.Running.ID, s.Running.FightStyle)
+	if len(s.Running) > 0 {
+		first := s.Running[0]
+		running = fmt.Sprintf("#%d %s", first.ID, first.FightStyle)
+		if extra := len(s.Running) - 1; extra > 0 {
+			running += fmt.Sprintf(" +%d more", extra)
+		}
 	}
 	return fmt.Sprintf("simc[%s, queued=%d/%d, ok=%d, fail=%d]",
 		running, s.QueueDepth, s.QueueCap, s.TotalCompleted, s.TotalFailed)

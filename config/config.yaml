@@ -20,11 +20,12 @@ store:
 simc:
   binary_path: /usr/local/bin/simc
   work_dir: /app/data/simc
-  threads: 4
+  threads: 2
+  workers: 8
   default_iterations: 10000
   max_iterations: 50000
   job_timeout: 30m
-  max_queue_depth: 4
+  max_queue_depth: 32
   report_retention: 24h
   history_size: 20
   stats_http_addr: 127.0.0.1:9090
@@ -35,6 +36,7 @@ simc:
 simc_run:
   rank_pass_iterations: 1000
   final_pass_iterations: 10000
+  rank_target_error: 0.5
   progress_every: 50
   progress_min_interval: 2m
   history_size: 5

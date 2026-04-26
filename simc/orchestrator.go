@@ -16,6 +16,7 @@ import (
 type OrchestratorConfig struct {
 	RankPassIterations  int           `yaml:"rank_pass_iterations"`
 	FinalPassIterations int           `yaml:"final_pass_iterations"`
+	RankTargetError     float64       `yaml:"rank_target_error"`
 	ProgressEvery       int           `yaml:"progress_every"`
 	ProgressMinInterval time.Duration `yaml:"progress_min_interval"`
 	HistorySize         int           `yaml:"history_size"`
@@ -28,6 +29,9 @@ func (c *OrchestratorConfig) Defaults() {
 	}
 	if c.FinalPassIterations <= 0 {
 		c.FinalPassIterations = 10000
+	}
+	if c.RankTargetError <= 0 {
+		c.RankTargetError = 0.5
 	}
 	if c.ProgressEvery <= 0 {
 		c.ProgressEvery = 50
@@ -55,6 +59,9 @@ type CompletionFunc func(RunInfo, *RunResult, error)
 type RunInfo struct {
 	ID               RunID      `json:"id"`
 	Requester        string        `json:"requester"`
+	CharacterName    string        `json:"character_name,omitempty"`
+	ClassName        string        `json:"class_name,omitempty"`
+	Spec             string        `json:"spec,omitempty"`
 	Phase            string        `json:"phase"`
 	SubmittedAt      time.Time     `json:"submitted_at"`
 	StartedAt        time.Time     `json:"started_at"`
@@ -66,6 +73,16 @@ type RunInfo struct {
 	Status           RunStatus  `json:"status"`
 	ErrMsg           string        `json:"err_msg,omitempty"`
 	Duration         time.Duration `json:"duration,omitempty"`
+}
+
+// DisplayName returns the character name when known, falling back to
+// the Discord requester. Used by the Discord layer in user-facing
+// strings.
+func (r RunInfo) DisplayName() string {
+	if r.CharacterName != "" {
+		return r.CharacterName
+	}
+	return r.Requester
 }
 
 // RunStatus is the terminal or in-progress state of a run.
@@ -391,6 +408,9 @@ func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*R
 
 	s.updateInfo(env, func(i *RunInfo) {
 		i.TotalSims = totalSims
+		i.CharacterName = profile.CharacterName()
+		i.ClassName = profile.ClassName()
+		i.Spec = profile.Spec()
 		i.Phase = fmt.Sprintf("starting (%d candidates × 2 styles)", candidateCount)
 	})
 
@@ -428,7 +448,7 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 	out := FightStyleResult{FightStyle: fs}
 
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("baseline (%s)", fs) })
-	baselineRes, err := s.runOne(ctx, env, baseline, fs, s.cfg.FinalPassIterations)
+	baselineRes, err := s.runOne(ctx, env, baseline, fs, s.cfg.FinalPassIterations, 0)
 	if err != nil {
 		return out, fmt.Errorf("baseline: %w", err)
 	}
@@ -447,7 +467,7 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 		s.notifyProgress(env)
 	}
 
-	runner := &orchestratorRunner{orch: s, env: env}
+	runner := &orchestratorRunner{orch: s, env: env, targetError: s.cfg.RankTargetError}
 	bestLoadout, _, err := GreedyOptimize(ctx, profile, cands, fs, s.cfg.RankPassIterations, runner, progress)
 	if err != nil {
 		return out, fmt.Errorf("greedy: %w", err)
@@ -455,7 +475,7 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("final pass (%s)", fs) })
 	bestProfile := BuildProfile(profile, bestLoadout)
-	finalRes, err := s.runOne(ctx, env, bestProfile, fs, s.cfg.FinalPassIterations)
+	finalRes, err := s.runOne(ctx, env, bestProfile, fs, s.cfg.FinalPassIterations, 0)
 	if err != nil {
 		return out, fmt.Errorf("final pass: %w", err)
 	}
@@ -475,26 +495,34 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 // orchestratorRunner adapts the orchestrator's queue.Submit/Subscribe
 // dance to the SimRunner interface the greedy optimizer expects. Each
 // Run() call also bumps the completed-sims counter so the progress
-// fraction stays in sync.
+// fraction stays in sync. The adapter is the layer that decides to
+// emit target_error on rank-pass sims so simc can bail early on
+// converged candidates.
 type orchestratorRunner struct {
-	orch *DefaultOrchestrator
-	env  *runEnvelope
+	orch        *DefaultOrchestrator
+	env         *runEnvelope
+	targetError float64
 }
 
 func (r *orchestratorRunner) Run(ctx context.Context, body []byte, fs FightStyle, iters int) (SimResult, error) {
-	res, err := r.orch.runOne(ctx, r.env, body, fs, iters)
+	res, err := r.orch.runOne(ctx, r.env, body, fs, iters, r.targetError)
 	if err == nil {
 		r.orch.bumpCompleted(r.env)
 	}
 	return res, err
 }
 
+// Concurrency reports how many sims the orchestrator's queue can run
+// in parallel; greedy uses it to bound per-slot fanout.
+func (r *orchestratorRunner) Concurrency() int { return r.orch.queue.Concurrency() }
+
 // runOne submits a single sim through the queue and waits for its outcome.
-func (s *DefaultOrchestrator) runOne(ctx context.Context, env *runEnvelope, body []byte, fs FightStyle, iters int) (SimResult, error) {
+func (s *DefaultOrchestrator) runOne(ctx context.Context, env *runEnvelope, body []byte, fs FightStyle, iters int, targetError float64) (SimResult, error) {
 	id, _, err := s.queue.Submit(SimRequest{
-		Profile:    body,
-		FightStyle: fs,
-		Iterations: iters,
+		Profile:     body,
+		FightStyle:  fs,
+		Iterations:  iters,
+		TargetError: targetError,
 	}, fmt.Sprintf("sim#%d/%s", env.info.ID, env.info.Requester))
 	if err != nil {
 		return SimResult{}, err

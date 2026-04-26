@@ -37,9 +37,14 @@ const (
 
 // SimRequest is a single simulation request submitted to the queue.
 type SimRequest struct {
-	Profile    []byte
-	FightStyle FightStyle
-	Iterations int
+	Profile     []byte
+	FightStyle  FightStyle
+	Iterations  int
+	// TargetError is the convergence threshold passed to simc as
+	// `target_error=<X>`. When > 0, simc stops iterating early once DPS
+	// variance falls below this percentage. Iterations remains the
+	// upper cap so a non-converging sim still terminates.
+	TargetError float64
 }
 
 // SimResult is the parsed outcome of a successful simulation.
@@ -108,7 +113,7 @@ type ContainerStats struct {
 
 // Snapshot is a point-in-time view of the simc subsystem.
 type Snapshot struct {
-	Running        *JobInfo       `json:"running,omitempty"`
+	Running        []JobInfo      `json:"running"`
 	Queued         []JobInfo      `json:"queued"`
 	QueueDepth     int            `json:"queue_depth"`
 	QueueCap       int            `json:"queue_cap"`
@@ -116,7 +121,7 @@ type Snapshot struct {
 	TotalFailed    uint64         `json:"total_failed"`
 	TotalCanceled  uint64         `json:"total_canceled"`
 	Recent         []FinishedJob  `json:"recent"`
-	Process        *ProcStats     `json:"process,omitempty"`
+	Processes      []ProcStats    `json:"processes"`
 	Container      ContainerStats `json:"container"`
 	GeneratedAt    time.Time      `json:"generated_at"`
 }

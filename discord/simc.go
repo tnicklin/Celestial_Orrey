@@ -90,7 +90,7 @@ func (c *DefaultDiscord) cmdSimcRun(ctx context.Context, m *discordgo.MessageCre
 
 	// Use the next ID for the thread name (it'll match the actual one
 	// since Submit assigns IDs monotonically and we hold no other ones).
-	threadID, threadName, threadOK := c.openSimThread(m.ChannelID, m.ID, parsed)
+	threadID, threadOK := c.openSimThread(m.ChannelID, m.ID, parsed)
 
 	id, err := c.simcOrch.Submit(profile, requester,
 		func(info simc.RunInfo) { c.postSimProgress(threadID, info) },
@@ -104,17 +104,18 @@ func (c *DefaultDiscord) cmdSimcRun(ctx context.Context, m *discordgo.MessageCre
 
 	c.postSimIntro(threadID, id, parsed, profile, stats)
 
+	// On thread success, the new thread + its intro post are signal enough.
+	// Only reply inline if we couldn't open a thread.
 	if threadOK {
-		return cmdResponse{content: fmt.Sprintf("Started **sim #%d** in thread **%s**.", id, threadName)}, nil
+		return cmdResponse{}, nil
 	}
 	return cmdResponse{content: fmt.Sprintf("Started **sim #%d** (threads unavailable; posting inline).", id)}, nil
 }
 
-// openSimThread starts a public thread off the user's command message. The
-// thread name is "character-realm -- Mon Jan 2 15:04". On any failure
-// (no permission, unsupported channel) returns the channel ID and ok=false
-// so callers fall back to inline posts.
-func (c *DefaultDiscord) openSimThread(channelID, messageID string, p *simc.Profile) (string, string, bool) {
+// openSimThread starts a public thread off the user's command message.
+// On any failure (no permission, unsupported channel) returns the
+// channel ID and ok=false so callers fall back to inline posts.
+func (c *DefaultDiscord) openSimThread(channelID, messageID string, p *simc.Profile) (string, bool) {
 	name := simThreadName(p)
 	thread, err := c.session.MessageThreadStartComplex(channelID, messageID, &discordgo.ThreadStart{
 		Name:                name,
@@ -122,9 +123,9 @@ func (c *DefaultDiscord) openSimThread(channelID, messageID string, p *simc.Prof
 	})
 	if err != nil {
 		c.logger.WarnW("create simc thread", "channel", channelID, "error", err)
-		return channelID, "", false
+		return channelID, false
 	}
-	return thread.ID, name, true
+	return thread.ID, true
 }
 
 // simThreadName builds a thread name from the parsed profile. Falls back to
@@ -213,7 +214,7 @@ func simCandidateWarnings(stats simc.CombinationStats) string {
 
 func (c *DefaultDiscord) postSimProgress(channelID string, info simc.RunInfo) {
 	msg := fmt.Sprintf("sim **#%d** (%s) — %s · %d/%d sims",
-		info.ID, info.Requester, info.Phase, info.CompletedSims, info.TotalSims)
+		info.ID, info.DisplayName(), info.Phase, info.CompletedSims, info.TotalSims)
 	if err := c.WriteMessage(channelID, msg); err != nil {
 		c.logger.WarnW("post sim progress", "run", info.ID, "error", err)
 	}
@@ -222,16 +223,16 @@ func (c *DefaultDiscord) postSimProgress(channelID string, info simc.RunInfo) {
 func (c *DefaultDiscord) postSimOutcome(channelID string, info simc.RunInfo, res *simc.RunResult, runErr error) {
 	if runErr != nil {
 		_ = c.WriteMessage(channelID, fmt.Sprintf("sim **#%d** (%s) %s: `%s`",
-			info.ID, info.Requester, info.Status, truncate(runErr.Error(), 500)))
+			info.ID, info.DisplayName(), info.Status, truncate(runErr.Error(), 500)))
 		return
 	}
 	if res == nil {
-		_ = c.WriteMessage(channelID, fmt.Sprintf("sim **#%d** (%s) finished but produced no result.", info.ID, info.Requester))
+		_ = c.WriteMessage(channelID, fmt.Sprintf("sim **#%d** (%s) finished but produced no result.", info.ID, info.DisplayName()))
 		return
 	}
 	embed := buildSimEmbed(c, info, res)
 	send := &discordgo.MessageSend{
-		Content: fmt.Sprintf("sim **#%d** complete for **%s**.", info.ID, info.Requester),
+		Content: fmt.Sprintf("sim **#%d** complete for **%s**.", info.ID, info.DisplayName()),
 		Embeds:  []*discordgo.MessageEmbed{embed},
 	}
 	if _, err := c.session.ChannelMessageSendComplex(channelID, send); err != nil {
@@ -268,7 +269,7 @@ func buildSimEmbed(c *DefaultDiscord, info simc.RunInfo, res *simc.RunResult) *d
 		res.CandidateCount, info.TotalSims, info.Duration.Round(time.Second)))
 	sb.WriteString("```")
 	return &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("Sim #%d — %s", info.ID, info.Requester),
+		Title:       fmt.Sprintf("Sim #%d — %s", info.ID, info.DisplayName()),
 		Description: sb.String(),
 		Color:       embedColor,
 	}
@@ -305,8 +306,21 @@ func changedSlots(changes []simc.SlotChange) []simc.SlotChange {
 	return out
 }
 
+// formatSlotChange renders a slot diff across two lines so long item
+// names don't wrap awkwardly in the embed:
+//   back       Shroud of the Soulhunter [276]
+//              ↳ Fluxweave Cloak [263]
+// The slot label appears on the first line; the indent on line 2 keeps
+// the arrow lined up under the item names.
 func (c *DefaultDiscord) formatSlotChange(ch simc.SlotChange) string {
-	return fmt.Sprintf("%-9s  %s  →  %s", ch.Slot, c.formatItemList(ch.Current), c.formatItemList(ch.Best))
+	const slotW = 9
+	indent := strings.Repeat(" ", slotW+2) // slotW + 2-space gap to align under name col
+	return fmt.Sprintf("%-*s  %s\n%s↳ %s",
+		slotW, ch.Slot,
+		c.formatItemList(ch.Current),
+		indent,
+		c.formatItemList(ch.Best),
+	)
 }
 
 func (c *DefaultDiscord) formatItemList(items []simc.Item) string {
@@ -333,7 +347,7 @@ func (c *DefaultDiscord) cmdSimcStatus() (cmdResponse, error) {
 	orchSnap := c.simcOrch.Stats()
 	queueSnap := c.simcQueue.Stats()
 
-	if orchSnap.Running == nil && len(orchSnap.Pending) == 0 && queueSnap.Running == nil && len(queueSnap.Queued) == 0 {
+	if orchSnap.Running == nil && len(orchSnap.Pending) == 0 && len(queueSnap.Running) == 0 && len(queueSnap.Queued) == 0 {
 		return cmdResponse{content: "SimC is idle."}, nil
 	}
 
@@ -341,7 +355,7 @@ func (c *DefaultDiscord) cmdSimcStatus() (cmdResponse, error) {
 	sb.WriteString("```\n")
 	if orchSnap.Running != nil {
 		r := orchSnap.Running
-		sb.WriteString(fmt.Sprintf("Sim running: #%d  %s\n", r.ID, r.Requester))
+		sb.WriteString(fmt.Sprintf("Sim running: #%d  %s\n", r.ID, r.DisplayName()))
 		sb.WriteString(fmt.Sprintf("             %s · %d/%d sims · %s elapsed\n",
 			r.Phase, r.CompletedSims, r.TotalSims, time.Since(r.StartedAt).Round(time.Second)))
 	}
@@ -349,12 +363,11 @@ func (c *DefaultDiscord) cmdSimcStatus() (cmdResponse, error) {
 		sb.WriteString(fmt.Sprintf("Sim queued: %d\n", len(orchSnap.Pending)))
 		for _, p := range orchSnap.Pending {
 			sb.WriteString(fmt.Sprintf("   #%d  %s  (waiting %s)\n",
-				p.ID, p.Requester, time.Since(p.SubmittedAt).Round(time.Second)))
+				p.ID, p.DisplayName(), time.Since(p.SubmittedAt).Round(time.Second)))
 		}
 	}
 
-	if queueSnap.Running != nil {
-		j := queueSnap.Running
+	for _, j := range queueSnap.Running {
 		sb.WriteString(fmt.Sprintf("Sim running: #%d  %s  %s  %d iters\n",
 			j.ID, j.Requester, j.FightStyle, j.Iterations))
 	}
@@ -373,7 +386,7 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 	sb.WriteString("```\n")
 	if orchSnap.Running != nil {
 		r := orchSnap.Running
-		sb.WriteString(fmt.Sprintf("Sim:    #%d  %s\n", r.ID, r.Requester))
+		sb.WriteString(fmt.Sprintf("Sim:    #%d  %s\n", r.ID, r.DisplayName()))
 		sb.WriteString(fmt.Sprintf("        %s · %d/%d sims · %s elapsed\n",
 			r.Phase, r.CompletedSims, r.TotalSims, time.Since(r.StartedAt).Round(time.Second)))
 		if r.BestPatchwerk > 0 {
@@ -386,15 +399,14 @@ func (c *DefaultDiscord) cmdSimcStats() (cmdResponse, error) {
 		sb.WriteString("Sim:    (idle)\n")
 	}
 
-	if queueSnap.Running != nil {
-		j := queueSnap.Running
+	for i, j := range queueSnap.Running {
 		sb.WriteString(fmt.Sprintf("Sim:    #%d  %s  %s  %d iters  %s elapsed\n",
 			j.ID, j.Requester, j.FightStyle, j.Iterations,
 			time.Since(j.StartedAt).Round(time.Second)))
-		if queueSnap.Process != nil {
+		if i < len(queueSnap.Processes) {
+			ps := queueSnap.Processes[i]
 			sb.WriteString(fmt.Sprintf("        pid %d  cpu %.0f%%  rss %s  threads %d\n",
-				queueSnap.Process.PID, queueSnap.Process.CPUPercent,
-				humanBytes(queueSnap.Process.RSSBytes), queueSnap.Process.ThreadCount,
+				ps.PID, ps.CPUPercent, humanBytes(ps.RSSBytes), ps.ThreadCount,
 			))
 		}
 	}

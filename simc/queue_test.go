@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -124,6 +125,64 @@ func TestQueue_CancelPending(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("first job did not complete")
+	}
+}
+
+// TestQueue_ConcurrentWorkers verifies that with Workers > 1, multiple
+// jobs progress in parallel. We submit 4 jobs each sleeping 300ms; with
+// 4 workers all four should finish in well under 4 × 300ms = 1.2s.
+func TestQueue_ConcurrentWorkers(t *testing.T) {
+	var inFlight atomic.Int32
+	var maxSeen atomic.Int32
+	fake := &fakeRunner{exec: func(args RunArgs) (SimResult, error) {
+		n := inFlight.Add(1)
+		if old := maxSeen.Load(); n > old {
+			maxSeen.Store(n)
+		}
+		time.Sleep(300 * time.Millisecond)
+		inFlight.Add(-1)
+		return SimResult{JobID: args.JobID, DPS: 1000}, nil
+	}}
+
+	cfg := Config{}
+	cfg.Defaults()
+	cfg.Workers = 4
+	cfg.MaxQueueDepth = 8
+	cfg.JobTimeout = 5 * time.Second
+	cfg.WorkDir = t.TempDir()
+	q := NewQueue(QueueParams{Config: cfg, Runner: fake})
+	if err := q.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer q.Stop()
+
+	const jobs = 4
+	chans := make([]<-chan JobOutcome, jobs)
+	start := time.Now()
+	for i := 0; i < jobs; i++ {
+		id, _, err := q.Submit(SimRequest{Profile: []byte("level=80\n")}, "tester")
+		if err != nil {
+			t.Fatal(err)
+		}
+		chans[i] = q.Subscribe(id)
+	}
+	for i, ch := range chans {
+		select {
+		case outcome := <-ch:
+			if outcome.Status != JobStatusOK {
+				t.Fatalf("job %d status = %s err = %v", i, outcome.Status, outcome.Err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("job %d timed out", i)
+		}
+	}
+	elapsed := time.Since(start)
+
+	if elapsed > 1100*time.Millisecond {
+		t.Errorf("4 jobs × 300ms with 4 workers took %s; expected < 1100ms — concurrency not working", elapsed)
+	}
+	if got := maxSeen.Load(); got < 2 {
+		t.Errorf("max in-flight = %d, want at least 2 (concurrency not exercised)", got)
 	}
 }
 
