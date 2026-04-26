@@ -169,3 +169,78 @@ func TestParseProfile_Midnight_NoOffHand(t *testing.T) {
 		t.Errorf("expected no equipped off_hand (priest with 2H staff), got %d", len(equipped[SlotOffHand]))
 	}
 }
+
+// TestParseProfile_OffHand_SeparatorBetweenCommentAndItem repros the
+// real-world bug where a bare '#' line between the name comment and
+// the item line clobbered the comment, leaving Track=Unknown and
+// excluding the off_hand from candidates.
+func TestParseProfile_OffHand_SeparatorBetweenCommentAndItem(t *testing.T) {
+	paste := `priest="Askrlol"
+level=90
+spec=shadow
+
+# Eredath Fang (276)
+#
+off_hand=,id=200001,bonus_id=13440/6652
+`
+	p, err := ParseProfile([]byte(paste))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := p.CandidatesBySlot()
+	got := cands[SlotOffHand]
+	if len(got) != 1 {
+		t.Fatalf("expected 1 off_hand candidate, got %d", len(got))
+	}
+	if got[0].Track != TrackHero {
+		t.Errorf("off_hand track = %s, want Hero (276 ilvl)", got[0].Track)
+	}
+	if got[0].OriginalIlvl != 276 {
+		t.Errorf("off_hand ilvl = %d, want 276", got[0].OriginalIlvl)
+	}
+}
+
+// TestParseProfile_OffHand_NoComment guards the equipped-item Hero
+// fallback. An item with NO preceding comment line still gets simulated
+// when equipped — better to sim something the player is actively
+// wearing than to silently drop the slot.
+func TestParseProfile_OffHand_NoComment(t *testing.T) {
+	paste := `priest="Askrlol"
+level=90
+spec=shadow
+
+off_hand=,id=200002,bonus_id=13440/6652
+`
+	p, err := ParseProfile([]byte(paste))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := p.CandidatesBySlot()
+	if len(cands[SlotOffHand]) != 1 {
+		t.Errorf("expected equipped off_hand to default to Hero candidacy, got %d candidates", len(cands[SlotOffHand]))
+	}
+}
+
+// TestParseProfile_BareHashAfterValidComment_Preserves verifies that a
+// bare "#" between a real comment and a different bag item doesn't
+// silently destroy the previous comment's metadata. We don't want
+// the parser to misattribute the previous comment to the next item
+// either — a bag item with no comment of its own simply has no meta.
+func TestParseProfile_BareHashAfterValidComment_Preserves(t *testing.T) {
+	paste := `priest="Askrlol"
+level=90
+spec=shadow
+
+# Eredath Fang (276)
+off_hand=,id=200003,bonus_id=13440/6652
+`
+	p, err := ParseProfile([]byte(paste))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := p.CandidatesBySlot()
+	got := cands[SlotOffHand]
+	if len(got) != 1 || got[0].Track != TrackHero {
+		t.Fatalf("expected hero off_hand, got %+v", got)
+	}
+}

@@ -173,10 +173,15 @@ func ParseProfile(b []byte) (*Profile, error) {
 		matches := itemLineRE.FindStringSubmatch(trimmed)
 		if matches == nil {
 			// Not an item line. Track standalone comments so the next item
-			// can pick up its meta. Skip "###" section headers — those don't
-			// describe individual items.
+			// can pick up its meta. Skip "###" section headers and bare "#"
+			// separators — those don't describe individual items, and a bare
+			// '#' between a real comment and the item line would clobber the
+			// useful name/ilvl meta.
 			if strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "###") {
-				lastComment = trimmed
+				body := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+				if body != "" {
+					lastComment = trimmed
+				}
 			}
 			if !headerDone {
 				p.Header = append(p.Header, line)
@@ -209,6 +214,14 @@ func ParseProfile(b []byte) (*Profile, error) {
 		// that omit the track keyword from their comment.
 		if it.Track == TrackUnknown && it.OriginalIlvl > 0 {
 			it.Track = inferTrackFromIlvl(it.OriginalIlvl)
+		}
+		// Last-resort fallback for an EQUIPPED item we still can't classify
+		// (no comment, or a comment with no ilvl). Default to Hero so the
+		// optimizer at least sims the item the user is actively wearing.
+		// Bag items keep TrackUnknown and stay excluded — we don't want to
+		// silently promote arbitrary low-ilvl candidates.
+		if it.Track == TrackUnknown && equipped {
+			it.Track = TrackHero
 		}
 		lastComment = ""
 		p.Items = append(p.Items, it)

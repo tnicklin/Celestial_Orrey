@@ -170,9 +170,13 @@ func (c *DefaultDiscord) postSimIntro(threadID string, id simc.RunID, p *simc.Pr
 			slotCount++
 		}
 	}
+	styleLabels := make([]string, 0, len(simc.FightStyleOrder))
+	for _, fs := range simc.FightStyleOrder {
+		styleLabels = append(styleLabels, simc.FightStyleLabel(fs))
+	}
 	body := fmt.Sprintf(
-		"%s\n%d candidate items across %d slots × 2 fight styles (Patchwerk + Dungeon Slice)",
-		header, candidateCount, slotCount,
+		"%s\n%d candidate items across %d slots × %d fight styles (%s)",
+		header, candidateCount, slotCount, len(simc.FightStyleOrder), strings.Join(styleLabels, " + "),
 	)
 	if w := simCandidateWarnings(stats); w != "" {
 		body = body + "\n\n" + w
