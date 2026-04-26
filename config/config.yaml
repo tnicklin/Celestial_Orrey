@@ -35,8 +35,6 @@ simc:
 simc_run:
   rank_pass_iterations: 1000
   final_pass_iterations: 10000
-  top_n: 10
-  max_combinations: 50000
   progress_every: 50
   progress_min_interval: 2m
   history_size: 5

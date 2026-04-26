@@ -16,8 +16,6 @@ import (
 type OrchestratorConfig struct {
 	RankPassIterations  int           `yaml:"rank_pass_iterations"`
 	FinalPassIterations int           `yaml:"final_pass_iterations"`
-	TopN                int           `yaml:"top_n"`
-	MaxCombinations     int           `yaml:"max_combinations"`
 	ProgressEvery       int           `yaml:"progress_every"`
 	ProgressMinInterval time.Duration `yaml:"progress_min_interval"`
 	HistorySize         int           `yaml:"history_size"`
@@ -30,12 +28,6 @@ func (c *OrchestratorConfig) Defaults() {
 	}
 	if c.FinalPassIterations <= 0 {
 		c.FinalPassIterations = 10000
-	}
-	if c.TopN <= 0 {
-		c.TopN = 10
-	}
-	if c.MaxCombinations <= 0 {
-		c.MaxCombinations = 50000
 	}
 	if c.ProgressEvery <= 0 {
 		c.ProgressEvery = 50
@@ -92,7 +84,7 @@ type RunResult struct {
 	RunID            RunID
 	Patchwerk        FightStyleResult
 	DungeonSlice     FightStyleResult
-	CombinationCount int
+	CandidateCount   int
 	BaselineProfile  []byte
 	Duration         time.Duration
 	Stats            CombinationStats
@@ -386,32 +378,33 @@ func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*R
 		return nil, fmt.Errorf("parse profile: %w", err)
 	}
 	cands := profile.CandidatesBySlot()
-	combos, stats, err := GenerateCombinations(cands, s.cfg.MaxCombinations)
-	if err != nil {
-		return nil, err
+	stats := AnalyzeCandidates(cands)
+
+	candidateCount := 0
+	for _, slot := range slotOrder {
+		candidateCount += len(cands[slot])
 	}
-	totalPerStyle := len(combos) + 1 // +1 for baseline
-	if s.cfg.TopN > 0 && len(combos) > s.cfg.TopN {
-		totalPerStyle += s.cfg.TopN
-	}
-	totalSims := totalPerStyle * 2 // patchwerk + dungeon_slice
+
+	// Per fight style: 1 baseline + greedy sims + 1 final.
+	perStyle := 2 + MaxGreedySims(cands)
+	totalSims := perStyle * 2 // patchwerk + dungeon_slice
 
 	s.updateInfo(env, func(i *RunInfo) {
 		i.TotalSims = totalSims
-		i.Phase = fmt.Sprintf("starting (%d combinations × 2 styles)", len(combos))
+		i.Phase = fmt.Sprintf("starting (%d candidates × 2 styles)", candidateCount)
 	})
 
 	baseline := BuildEquippedBaseline(profile)
 
 	res := &RunResult{
-		RunID:            env.info.ID,
-		CombinationCount: len(combos),
-		BaselineProfile:  baseline,
-		Stats:            stats,
+		RunID:           env.info.ID,
+		CandidateCount:  candidateCount,
+		BaselineProfile: baseline,
+		Stats:           stats,
 	}
 
 	for _, fs := range []FightStyle{FightStylePatchwerk, FightStyleDungeonSlice} {
-		styleResult, err := s.runFightStyle(ctx, env, profile, baseline, combos, fs)
+		styleResult, err := s.runFightStyle(ctx, env, profile, baseline, cands, fs)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", fs, err)
 		}
@@ -429,9 +422,9 @@ func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*R
 	return res, nil
 }
 
-// runFightStyle runs the baseline, the rank pass, and the final pass for a
-// single fight style.
-func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelope, profile *Profile, baseline []byte, combos []Loadout, fs FightStyle) (FightStyleResult, error) {
+// runFightStyle runs the baseline, the greedy sweep, and the final
+// high-iteration sim on the assembled winning loadout for one style.
+func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelope, profile *Profile, baseline []byte, cands map[Slot][]Item, fs FightStyle) (FightStyleResult, error) {
 	out := FightStyleResult{FightStyle: fs}
 
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("baseline (%s)", fs) })
@@ -440,79 +433,60 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 		return out, fmt.Errorf("baseline: %w", err)
 	}
 	out.BaselineDPS = baselineRes.DPS
-
-	type comboScore struct {
-		idx int
-		dps float64
-	}
-	scores := make([]comboScore, 0, len(combos))
+	s.bumpCompleted(env)
 
 	lastProgress := time.Now()
-	for i, combo := range combos {
-		if err := ctx.Err(); err != nil {
-			return out, err
+	progress := func(pass int, slot Slot, slotIdx, slotsTotal int) {
+		if time.Since(lastProgress) < s.cfg.ProgressMinInterval {
+			return
 		}
-		body := BuildProfile(profile, combo)
-		r, err := s.runOne(ctx, env, body, fs, s.cfg.RankPassIterations)
-		if err != nil {
-			return out, fmt.Errorf("rank pass combo %d: %w", i, err)
-		}
-		scores = append(scores, comboScore{idx: i, dps: r.DPS})
-
-		s.bumpCompleted(env)
-		if (i+1)%s.cfg.ProgressEvery == 0 && time.Since(lastProgress) >= s.cfg.ProgressMinInterval {
-			lastProgress = time.Now()
-			s.updateInfo(env, func(info *RunInfo) {
-				info.Phase = fmt.Sprintf("rank pass %s (%d/%d)", fs, i+1, len(combos))
-			})
-			s.notifyProgress(env)
-		}
+		lastProgress = time.Now()
+		s.updateInfo(env, func(info *RunInfo) {
+			info.Phase = fmt.Sprintf("greedy %s pass %d: %s (%d/%d)", fs, pass+1, slot, slotIdx+1, slotsTotal)
+		})
+		s.notifyProgress(env)
 	}
 
-	sort.Slice(scores, func(a, b int) bool { return scores[a].dps > scores[b].dps })
-	topN := s.cfg.TopN
-	if topN > len(scores) {
-		topN = len(scores)
+	runner := &orchestratorRunner{orch: s, env: env}
+	bestLoadout, _, err := GreedyOptimize(ctx, profile, cands, fs, s.cfg.RankPassIterations, runner, progress)
+	if err != nil {
+		return out, fmt.Errorf("greedy: %w", err)
 	}
 
-	bestIdx := -1
-	bestDPS := 0.0
-	if topN > 0 {
-		s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("final pass %s (top %d)", fs, topN) })
-		for k := 0; k < topN; k++ {
-			if err := ctx.Err(); err != nil {
-				return out, err
-			}
-			combo := combos[scores[k].idx]
-			body := BuildProfile(profile, combo)
-			r, err := s.runOne(ctx, env, body, fs, s.cfg.FinalPassIterations)
-			if err != nil {
-				return out, fmt.Errorf("final pass combo %d: %w", scores[k].idx, err)
-			}
-			if r.DPS > bestDPS {
-				bestDPS = r.DPS
-				bestIdx = scores[k].idx
-			}
-			s.bumpCompleted(env)
-		}
-	} else if len(scores) > 0 {
-		bestIdx = scores[0].idx
-		bestDPS = scores[0].dps
+	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("final pass (%s)", fs) })
+	bestProfile := BuildProfile(profile, bestLoadout)
+	finalRes, err := s.runOne(ctx, env, bestProfile, fs, s.cfg.FinalPassIterations)
+	if err != nil {
+		return out, fmt.Errorf("final pass: %w", err)
 	}
+	s.bumpCompleted(env)
 
-	if bestIdx < 0 {
-		return out, errors.New("no winning combination")
-	}
-	bestLoadout := combos[bestIdx]
 	out.BestLoadout = bestLoadout
-	out.BestDPS = bestDPS
-	out.DeltaDPS = bestDPS - out.BaselineDPS
+	out.BestDPS = finalRes.DPS
+	out.DeltaDPS = finalRes.DPS - out.BaselineDPS
 	if out.BaselineDPS > 0 {
 		out.DeltaPct = out.DeltaDPS / out.BaselineDPS * 100
 	}
-	out.BestProfile = BuildProfile(profile, bestLoadout)
+	out.BestProfile = bestProfile
 	out.SlotChanges = computeSlotChanges(profile, bestLoadout)
 	return out, nil
+}
+
+// orchestratorRunner adapts the orchestrator's queue.Submit/Subscribe
+// dance to the SimRunner interface the greedy optimizer expects. Each
+// Run() call also bumps the completed-sims counter so the progress
+// fraction stays in sync.
+type orchestratorRunner struct {
+	orch *DefaultOrchestrator
+	env  *runEnvelope
+}
+
+func (r *orchestratorRunner) Run(ctx context.Context, body []byte, fs FightStyle, iters int) (SimResult, error) {
+	res, err := r.orch.runOne(ctx, r.env, body, fs, iters)
+	if err == nil {
+		r.orch.bumpCompleted(r.env)
+	}
+	return res, err
 }
 
 // runOne submits a single sim through the queue and waits for its outcome.

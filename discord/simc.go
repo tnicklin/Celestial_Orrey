@@ -161,9 +161,17 @@ func (c *DefaultDiscord) postSimIntro(threadID string, id simc.RunID, p *simc.Pr
 			header += fmt.Sprintf(" — %s", realm)
 		}
 	}
+	candidateCount := 0
+	slotCount := 0
+	for _, items := range stats.BySlot {
+		if items > 0 {
+			candidateCount += items
+			slotCount++
+		}
+	}
 	body := fmt.Sprintf(
-		"%s\n%d candidate combinations × 2 fight styles (Patchwerk + Dungeon Slice)",
-		header, stats.Total,
+		"%s\n%d candidate items across %d slots × 2 fight styles (Patchwerk + Dungeon Slice)",
+		header, candidateCount, slotCount,
 	)
 	if w := simCandidateWarnings(stats); w != "" {
 		body = body + "\n\n" + w
@@ -256,8 +264,8 @@ func buildSimEmbed(c *DefaultDiscord, info simc.RunInfo, res *simc.RunResult) *d
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("Combinations: %d  ·  Total sims: %d  ·  Duration: %s\n",
-		res.CombinationCount, info.TotalSims, info.Duration.Round(time.Second)))
+	sb.WriteString(fmt.Sprintf("Candidates: %d  ·  Total sims: %d  ·  Duration: %s\n",
+		res.CandidateCount, info.TotalSims, info.Duration.Round(time.Second)))
 	sb.WriteString("```")
 	return &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("Sim #%d — %s", info.ID, info.Requester),
@@ -505,10 +513,10 @@ func simcUsage() string {
 !simc run
     Attach your /simc dump (or paste it directly — Discord auto-converts
     large pastes into a message.txt attachment).
-    Runs across all hero/myth bag combinations, sim'd at both
+    Greedy per-slot search across hero/myth bag candidates, sim'd at both
     Patchwerk and Dungeon Slice. Hero items are rescaled to 276, myth to 289.
-    Gems and enchants are stripped for an apples-to-apples comparison.
-    Long runtime expected — minutes to hours depending on candidate count.
+    Gems and enchants are kept verbatim from the paste.
+    Runtime grows with candidate count — typically minutes, not hours.
 
 !simc status         Show Active sims and queue state
 !simc stats          Detailed runtime + container resource stats
