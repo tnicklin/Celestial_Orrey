@@ -110,14 +110,16 @@ type RunResult struct {
 // FightStyleResult holds the baseline + best DPS plus the slot diff for a
 // single fight style.
 type FightStyleResult struct {
-	FightStyle  FightStyle
-	BaselineDPS float64
-	BestDPS     float64
-	DeltaDPS    float64
-	DeltaPct    float64
-	BestLoadout Loadout
-	BestProfile []byte
-	SlotChanges []SlotChange
+	FightStyle     FightStyle
+	BaselineDPS    float64
+	BestDPS        float64
+	DeltaDPS       float64
+	DeltaPct       float64
+	BestLoadout    Loadout
+	BestProfile    []byte
+	SlotChanges    []SlotChange
+	GemChanges     []GemChange
+	EnchantChanges []EnchantChange
 }
 
 // SlotChange describes the per-slot diff between currently equipped and the
@@ -402,8 +404,13 @@ func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*R
 		candidateCount += len(cands[slot])
 	}
 
-	// Per fight style: 1 baseline + greedy sims + 1 final.
-	perStyle := 2 + MaxGreedySims(cands)
+	// Per fight style: 1 baseline + greedy sims + cross-product refine
+	// (worst case) + gem/enchant on the projected post-greedy loadout
+	// (estimated using equipped items as a proxy) + 1 final.
+	greedyMax := MaxGreedySims(cands)
+	crossMax := MaxCrossProductSims(MaxCrossProductSlots)
+	gemEnchantMax := MaxGemEnchantSims(estimatedPostGreedyLoadout(profile, cands), profile.ClassName(), profile.Spec())
+	perStyle := 2 + greedyMax + crossMax + gemEnchantMax
 	totalSims := perStyle * 2 // patchwerk + dungeon_slice
 
 	s.updateInfo(env, func(i *RunInfo) {
@@ -468,27 +475,42 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 	}
 
 	runner := &orchestratorRunner{orch: s, env: env, targetError: s.cfg.RankTargetError}
-	bestLoadout, _, err := GreedyOptimize(ctx, profile, cands, fs, s.cfg.RankPassIterations, runner, progress)
+	bestLoadout, slotResults, _, err := GreedyOptimize(ctx, profile, cands, fs, s.cfg.RankPassIterations, runner, progress)
 	if err != nil {
 		return out, fmt.Errorf("greedy: %w", err)
 	}
 
+	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("refine (%s)", fs) })
+	tel := &GreedyTelemetry{}
+	refined, err := CrossProductRefine(ctx, profile, bestLoadout, slotResults, fs, s.cfg.RankPassIterations, runner, tel)
+	if err != nil {
+		return out, fmt.Errorf("cross-product refine: %w", err)
+	}
+
+	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("gems + enchants (%s)", fs) })
+	gemEnchanted, gemChanges, enchantChanges, err := OptimizeGemsAndEnchants(ctx, profile, refined, fs, s.cfg.RankPassIterations, runner, tel)
+	if err != nil {
+		return out, fmt.Errorf("gem/enchant: %w", err)
+	}
+
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("final pass (%s)", fs) })
-	bestProfile := BuildProfile(profile, bestLoadout)
+	bestProfile := BuildProfile(profile, gemEnchanted)
 	finalRes, err := s.runOne(ctx, env, bestProfile, fs, s.cfg.FinalPassIterations, 0)
 	if err != nil {
 		return out, fmt.Errorf("final pass: %w", err)
 	}
 	s.bumpCompleted(env)
 
-	out.BestLoadout = bestLoadout
+	out.BestLoadout = gemEnchanted
 	out.BestDPS = finalRes.DPS
 	out.DeltaDPS = finalRes.DPS - out.BaselineDPS
 	if out.BaselineDPS > 0 {
 		out.DeltaPct = out.DeltaDPS / out.BaselineDPS * 100
 	}
 	out.BestProfile = bestProfile
-	out.SlotChanges = computeSlotChanges(profile, bestLoadout)
+	out.SlotChanges = computeSlotChanges(profile, gemEnchanted)
+	out.GemChanges = gemChanges
+	out.EnchantChanges = enchantChanges
 	return out, nil
 }
 
@@ -584,6 +606,38 @@ func computeSlotChanges(profile *Profile, best Loadout) []SlotChange {
 		changes = append(changes, ch)
 	}
 	return changes
+}
+
+// estimatedPostGreedyLoadout returns a loadout shape used only for sizing
+// the gem/enchant sim budget up-front: every slot gets one (or two)
+// candidate items so MaxGemEnchantSims can count gem sockets and ring
+// slots. We don't know the actual greedy winner yet, so we just take a
+// representative item per slot (preferring the equipped one when it's a
+// candidate, otherwise the first candidate).
+func estimatedPostGreedyLoadout(p *Profile, cands map[Slot][]Item) Loadout {
+	equipped := p.EquippedBySlot()
+	out := Loadout{Items: make(map[Slot][]Item, len(cands))}
+	for _, slot := range slotOrder {
+		items := cands[slot]
+		if len(items) == 0 {
+			continue
+		}
+		eq := equipped[slot]
+		if slot.IsDoubleSlot() && len(eq) >= 2 {
+			out.Items[slot] = []Item{eq[0], eq[1]}
+			continue
+		}
+		if len(eq) >= 1 {
+			out.Items[slot] = []Item{eq[0]}
+			continue
+		}
+		if slot.IsDoubleSlot() && len(items) >= 2 {
+			out.Items[slot] = []Item{items[0], items[1]}
+		} else {
+			out.Items[slot] = []Item{items[0]}
+		}
+	}
+	return out
 }
 
 func sameItems(a, b []Item) bool {

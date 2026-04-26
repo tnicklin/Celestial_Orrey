@@ -27,30 +27,65 @@ type GreedyTelemetry struct {
 // can publish status updates. All fields are best-effort.
 type GreedyProgress func(pass int, slot Slot, slotIdx, slotsTotal int)
 
+// GreedySlotResult captures the most recent per-slot pick made during
+// the final sweep: the candidate pool and the DPS scored by each. The
+// orchestrator uses this to find "indeterminate" slots (top-1 vs top-2
+// gap below noise) for the cross-product refinement step.
+//
+// Populated only for single slots — double slots use sequential picking
+// which doesn't yield a clean per-candidate score.
+type GreedySlotResult struct {
+	Pool   []Item
+	Scores []float64
+}
+
+// TopN returns the top-n indices into Pool sorted by score descending.
+// If n exceeds len(Pool), all indices are returned.
+func (r GreedySlotResult) TopN(n int) []int {
+	type kv struct {
+		i int
+		s float64
+	}
+	pairs := make([]kv, len(r.Scores))
+	for i, s := range r.Scores {
+		pairs[i] = kv{i, s}
+	}
+	// Simple selection — slot pools are tiny (≤10).
+	for i := 0; i < len(pairs); i++ {
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].s > pairs[i].s {
+				pairs[i], pairs[j] = pairs[j], pairs[i]
+			}
+		}
+	}
+	if n > len(pairs) {
+		n = len(pairs)
+	}
+	out := make([]int, n)
+	for i := 0; i < n; i++ {
+		out[i] = pairs[i].i
+	}
+	return out
+}
+
 // GreedyOptimize runs a per-slot greedy search over the candidate pool
-// for a single fight style. It returns the best assembled loadout and
-// the number of sims actually executed.
+// for a single fight style. It returns the best assembled loadout, the
+// per-slot scoring data from the final sweep, and the number of sims
+// actually executed.
 //
 // The algorithm:
-//   1. Seed the loadout with the user's currently equipped items, but
-//      only for slots whose equipped item is on the eligible track
-//      (Hero/Myth) AND appears in the candidate set. This avoids
-//      double-counting equipped items that the parser already included
-//      in `cands`.
-//   2. Sweep slots in `slotOrder`. For each slot, sim every candidate
-//      held against the current best for the other slots, pick the
-//      winner. For finger/trinket: pick the best ring/trinket #1 first,
-//      then sim the remaining candidates against the new winner to pick
-//      #2 (sequential picking captures basic pair interaction).
-//   3. If any slot's winner differed from the previous best, do one
-//      refinement sweep using the new winners as the baseline. Bail
-//      early when a sweep produces no changes.
-//
-// pickBest always treats the slot's currently-held items as candidates
-// too, so we can never produce a loadout worse than the seed.
-func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs FightStyle, iters int, runner SimRunner, onProgress GreedyProgress) (Loadout, GreedyTelemetry, error) {
+//  1. Seed the loadout with the user's currently equipped items, but
+//     only for slots whose equipped item is on the eligible track
+//     (Hero/Myth) AND appears in the candidate set.
+//  2. Sweep slots in `slotOrder`. For each slot, sim every candidate
+//     held against the current best for the other slots, pick the
+//     winner. Finger/trinket use sequential picking.
+//  3. If any slot's winner differed from the previous best, do one
+//     refinement sweep. Bail early when a sweep produces no changes.
+func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs FightStyle, iters int, runner SimRunner, onProgress GreedyProgress) (Loadout, map[Slot]GreedySlotResult, GreedyTelemetry, error) {
 	cur := seedLoadout(p, cands)
 	tel := GreedyTelemetry{}
+	results := make(map[Slot]GreedySlotResult)
 
 	const maxPasses = 2
 	for pass := 0; pass < maxPasses; pass++ {
@@ -68,7 +103,7 @@ func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs F
 			if slot.IsDoubleSlot() {
 				slotChanged, err := pickDoubleSlot(ctx, p, cur, slot, items, fs, iters, runner, &tel)
 				if err != nil {
-					return Loadout{}, tel, err
+					return Loadout{}, nil, tel, err
 				}
 				if slotChanged {
 					changed = true
@@ -76,10 +111,11 @@ func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs F
 				continue
 			}
 
-			slotChanged, err := pickSingleSlot(ctx, p, cur, slot, items, fs, iters, runner, &tel)
+			res, slotChanged, err := pickSingleSlot(ctx, p, cur, slot, items, fs, iters, runner, &tel)
 			if err != nil {
-				return Loadout{}, tel, err
+				return Loadout{}, nil, tel, err
 			}
+			results[slot] = res
 			if slotChanged {
 				changed = true
 			}
@@ -89,7 +125,7 @@ func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs F
 		}
 	}
 
-	return cur, tel, nil
+	return cur, results, tel, nil
 }
 
 // seedLoadout returns the starting loadout: the user's currently-equipped
@@ -104,9 +140,6 @@ func seedLoadout(p *Profile, cands map[Slot][]Item) Loadout {
 		}
 		eq := equipped[slot]
 		if len(eq) == 0 {
-			// Slot has candidates but nothing equipped — let the first
-			// sweep pick. Use the first candidate (or first two for
-			// double slots) as a starting placeholder.
 			if slot.IsDoubleSlot() {
 				if len(cands[slot]) >= 2 {
 					out.Items[slot] = []Item{cands[slot][0], cands[slot][1]}
@@ -129,8 +162,8 @@ func seedLoadout(p *Profile, cands map[Slot][]Item) Loadout {
 
 // pickSingleSlot sims each candidate (plus whatever is currently in the
 // slot, dedup'd by fingerprint) and updates cur with the winner.
-// Returns whether the winner differed from what was already in cur.
-func pickSingleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, items []Item, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (bool, error) {
+// Returns the per-candidate scores and whether the winner differed.
+func pickSingleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, items []Item, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (GreedySlotResult, bool, error) {
 	pool := mergeWithCurrent(items, cur.Items[slot])
 
 	bodies := make([][]byte, len(pool))
@@ -139,13 +172,24 @@ func pickSingleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 		bodies[i] = BuildProfile(p, trial)
 	}
 
-	bestIdx, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
+	scores, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
 	if err != nil {
-		return false, err
+		return GreedySlotResult{}, false, err
+	}
+	bestIdx := -1
+	bestDPS := -1.0
+	for i, s := range scores {
+		if s > bestDPS {
+			bestDPS = s
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return GreedySlotResult{}, false, fmt.Errorf("sim slot %s: no successful candidate", slot)
 	}
 	prev := cur.Items[slot]
 	cur.Items[slot] = []Item{pool[bestIdx]}
-	return !sameItems(prev, cur.Items[slot]), nil
+	return GreedySlotResult{Pool: pool, Scores: scores}, !sameItems(prev, cur.Items[slot]), nil
 }
 
 // pickDoubleSlot does the sequential pick for finger/trinket: first the
@@ -155,8 +199,6 @@ func pickSingleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, items []Item, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (bool, error) {
 	prev := append([]Item(nil), cur.Items[slot]...)
 
-	// With a single candidate we can't form a pair — drop it into the
-	// first sub-slot and bail.
 	if len(items) < 2 {
 		cur.Items[slot] = []Item{items[0]}
 		return !sameItems(prev, cur.Items[slot]), nil
@@ -166,7 +208,6 @@ func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 	if len(prev) >= 2 {
 		heldSecondary = prev[1]
 	} else {
-		// No equipped pair to hold; use the first candidate as a stand-in.
 		heldSecondary = items[0]
 	}
 
@@ -181,7 +222,6 @@ func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 		secondaryItems = mergeWithCurrent(secondaryItems, []Item{prev[1]})
 	}
 	if len(secondaryItems) == 0 {
-		// User only had one eligible item for this double slot; keep one.
 		cur.Items[slot] = []Item{winner1}
 		return !sameItems(prev, cur.Items[slot]), nil
 	}
@@ -207,17 +247,29 @@ func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, 
 		trial := withSlot(cur, slot, pair)
 		bodies[i] = BuildProfile(p, trial)
 	}
-	bestIdx, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
+	scores, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
 	if err != nil {
 		return Item{}, err
+	}
+	bestIdx := -1
+	bestDPS := -1.0
+	for i, s := range scores {
+		if s > bestDPS {
+			bestDPS = s
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return Item{}, fmt.Errorf("sim slot %s: no successful candidate", slot)
 	}
 	return pool[bestIdx], nil
 }
 
 // runFanout sims the supplied bodies in parallel up to runner.Concurrency()
-// and returns the index of the highest-DPS result. The first runner error
-// short-circuits the rest. tel.SimsRun is incremented per successful sim.
-func runFanout(ctx context.Context, bodies [][]byte, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry, slot Slot) (int, error) {
+// and returns per-index DPS scores. Indices that errored are returned as
+// -1; the first hard error short-circuits the rest. tel.SimsRun is
+// incremented per successful sim.
+func runFanout(ctx context.Context, bodies [][]byte, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry, slot Slot) ([]float64, error) {
 	type result struct {
 		idx int
 		dps float64
@@ -234,8 +286,6 @@ func runFanout(ctx context.Context, bodies [][]byte, fs FightStyle, iters int, r
 	sem := make(chan struct{}, conc)
 	results := make(chan result, len(bodies))
 
-	// Use a shared cancelable subcontext so the first error tears down
-	// the rest. We still wait for already-running goroutines to settle.
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -254,8 +304,10 @@ func runFanout(ctx context.Context, bodies [][]byte, fs FightStyle, iters int, r
 		}()
 	}
 
-	bestIdx := -1
-	bestDPS := -1.0
+	scores := make([]float64, len(bodies))
+	for i := range scores {
+		scores[i] = -1
+	}
 	var firstErr error
 	for i := 0; i < len(bodies); i++ {
 		r := <-results
@@ -267,18 +319,12 @@ func runFanout(ctx context.Context, bodies [][]byte, fs FightStyle, iters int, r
 			continue
 		}
 		tel.SimsRun++
-		if r.dps > bestDPS {
-			bestDPS = r.dps
-			bestIdx = r.idx
-		}
+		scores[r.idx] = r.dps
 	}
 	if firstErr != nil {
-		return 0, firstErr
+		return nil, firstErr
 	}
-	if bestIdx < 0 {
-		return 0, fmt.Errorf("sim slot %s: no successful candidate", slot)
-	}
-	return bestIdx, nil
+	return scores, nil
 }
 
 // withSlot returns a shallow copy of l with `slot` replaced by `items`.
@@ -293,8 +339,7 @@ func withSlot(l Loadout, slot Slot, items []Item) Loadout {
 }
 
 // mergeWithCurrent appends each item in `current` to `pool` unless it's
-// already present (by fingerprint). Order: pool first, then any new
-// current items appended at the end.
+// already present (by fingerprint).
 func mergeWithCurrent(pool, current []Item) []Item {
 	if len(current) == 0 {
 		return pool
@@ -330,8 +375,7 @@ func excludeByFingerprint(items []Item, drop Item) []Item {
 }
 
 // MaxGreedySims returns the upper bound on sims the optimizer will run
-// for one fight style given a candidate set. Used by the orchestrator to
-// pre-fill RunInfo.TotalSims so the progress fraction never goes >100%.
+// for one fight style given a candidate set.
 func MaxGreedySims(cands map[Slot][]Item) int {
 	const passes = 2
 	per := 0
@@ -341,8 +385,6 @@ func MaxGreedySims(cands map[Slot][]Item) int {
 			continue
 		}
 		if slot.IsDoubleSlot() {
-			// pickDoubleSlot does at most 2n-1 sims (n primary + n-1 secondary)
-			// when n >= 2; n sims when n == 1.
 			if n < 2 {
 				per += n
 			} else {

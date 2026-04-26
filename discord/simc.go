@@ -265,6 +265,34 @@ func buildSimEmbed(c *DefaultDiscord, info simc.RunInfo, res *simc.RunResult) *d
 		}
 		sb.WriteString("\n")
 	}
+	if len(res.Patchwerk.GemChanges) > 0 {
+		sb.WriteString("Patchwerk gem changes:\n")
+		for _, ch := range res.Patchwerk.GemChanges {
+			sb.WriteString("  " + c.formatGemChange(ch) + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(res.Patchwerk.EnchantChanges) > 0 {
+		sb.WriteString("Patchwerk enchant changes:\n")
+		for _, ch := range res.Patchwerk.EnchantChanges {
+			sb.WriteString("  " + c.formatEnchantChange(ch) + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(res.DungeonSlice.GemChanges) > 0 {
+		sb.WriteString("Dungeon Slice gem changes:\n")
+		for _, ch := range res.DungeonSlice.GemChanges {
+			sb.WriteString("  " + c.formatGemChange(ch) + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(res.DungeonSlice.EnchantChanges) > 0 {
+		sb.WriteString("Dungeon Slice enchant changes:\n")
+		for _, ch := range res.DungeonSlice.EnchantChanges {
+			sb.WriteString("  " + c.formatEnchantChange(ch) + "\n")
+		}
+		sb.WriteString("\n")
+	}
 	sb.WriteString(fmt.Sprintf("Candidates: %d  ·  Total sims: %d  ·  Duration: %s\n",
 		res.CandidateCount, info.TotalSims, info.Duration.Round(time.Second)))
 	sb.WriteString("```")
@@ -321,6 +349,54 @@ func (c *DefaultDiscord) formatSlotChange(ch simc.SlotChange) string {
 		indent,
 		c.formatItemList(ch.Best),
 	)
+}
+
+// formatGemChange renders a gem swap on two lines with the same ↳
+// indent style as slot changes:
+//   ring 1     Flawless Crit (id:240892)
+//              ↳ Flawless Haste (id:240891)
+func (c *DefaultDiscord) formatGemChange(ch simc.GemChange) string {
+	const slotW = 9
+	indent := strings.Repeat(" ", slotW+2)
+	before := formatGemRef(ch.Before, "")
+	after := formatGemRef(ch.After, ch.Name)
+	return fmt.Sprintf("%-*s  %s\n%s↳ %s",
+		slotW, ch.Slot, before, indent, after,
+	)
+}
+
+// formatEnchantChange renders a ring-enchant swap on two lines.
+func (c *DefaultDiscord) formatEnchantChange(ch simc.EnchantChange) string {
+	const slotW = 9
+	indent := strings.Repeat(" ", slotW+2)
+	before := formatEnchantRef(ch.Before, "")
+	after := formatEnchantRef(ch.After, ch.Name)
+	return fmt.Sprintf("%-*s  %s\n%s↳ %s",
+		slotW, ch.Slot, before, indent, after,
+	)
+}
+
+// formatGemRef formats a gem_id value with a name when one is known.
+// Slash-separated multi-socket strings are passed through verbatim
+// after the first id (e.g. "240892/240891").
+func formatGemRef(raw, name string) string {
+	if raw == "" {
+		return "(none)"
+	}
+	if name != "" {
+		return fmt.Sprintf("%s (id:%s)", name, raw)
+	}
+	return fmt.Sprintf("id:%s", raw)
+}
+
+func formatEnchantRef(raw, name string) string {
+	if raw == "" {
+		return "(none)"
+	}
+	if name != "" {
+		return fmt.Sprintf("%s (id:%s)", name, raw)
+	}
+	return fmt.Sprintf("id:%s", raw)
 }
 
 func (c *DefaultDiscord) formatItemList(items []simc.Item) string {

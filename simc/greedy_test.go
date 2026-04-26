@@ -81,7 +81,7 @@ func TestGreedyOptimize_SingleSlotPicksWinner(t *testing.T) {
 	p := makeProfile(t, equipped, map[Slot][]Item{SlotHead: cands[SlotHead][1:]})
 	runner := newFakeRunner(map[int]float64{1: 100, 2: 200})
 
-	got, tel, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
+	got, _, tel, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestGreedyOptimize_NoChangeBailsAfterOnePass(t *testing.T) {
 	p := makeProfile(t, equipped, map[Slot][]Item{SlotHead: cands[SlotHead][1:]})
 	runner := newFakeRunner(map[int]float64{1: 200, 2: 100})
 
-	got, tel, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
+	got, _, tel, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestGreedyOptimize_DoubleSlotSequentialPick(t *testing.T) {
 	// which lines up with the sequential pick algorithm.
 	runner := newFakeRunner(map[int]float64{10: 10, 11: 50, 12: 30, 13: 40})
 
-	got, _, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
+	got, _, _, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestGreedyOptimize_RefinementCanFlipSlot(t *testing.T) {
 	})
 	runner := newFakeRunner(map[int]float64{1: 100, 2: 200, 10: 100, 20: 200})
 
-	got, tel, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
+	got, _, tel, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestGreedyOptimize_HandlesDoubleSlotSingleCandidate(t *testing.T) {
 	p := makeProfile(t, equipped, nil)
 	runner := newFakeRunner(map[int]float64{1: 100})
 
-	got, _, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
+	got, _, _, err := GreedyOptimize(context.Background(), p, cands, FightStylePatchwerk, 100, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
