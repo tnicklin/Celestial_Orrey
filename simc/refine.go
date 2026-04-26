@@ -72,40 +72,56 @@ func indeterminateSlotsFromGreedy(results map[Slot]GreedySlotResult) []Indetermi
 // greedy scores. For slots where top-1 and top-2 are within the
 // indeterminate threshold, it brute-forces every 2^k assignment and
 // picks the loadout with the highest sim DPS. Returns the refined
-// loadout (== greedy if no indeterminate slots).
-func CrossProductRefine(ctx context.Context, p *Profile, base Loadout, results map[Slot]GreedySlotResult, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (Loadout, error) {
+// loadout (== greedy if no indeterminate slots) and a structured
+// report of every combo tried.
+func CrossProductRefine(ctx context.Context, p *Profile, base Loadout, results map[Slot]GreedySlotResult, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (Loadout, CrossProductReport, error) {
 	indet := indeterminateSlotsFromGreedy(results)
+	report := CrossProductReport{}
 	if len(indet) == 0 {
-		return base, nil
+		report.Skipped = true
+		report.SkipReason = "no_indeterminate_slots"
+		return base, report, nil
 	}
 
-	// Generate every 2^k combination of "top vs runner-up" for the
-	// indeterminate slots. Slot k's pick is encoded by bit k of i:
-	// 0 = top, 1 = runner-up.
+	for _, s := range indet {
+		report.IndeterminateSlots = append(report.IndeterminateSlots, IndetSlot{
+			Slot:   s.Slot.String(),
+			GapPct: s.GapPct * 100,
+		})
+	}
+
 	combos := 1 << len(indet)
+	report.CombosTried = combos
 	bodies := make([][]byte, combos)
 	loadouts := make([]Loadout, combos)
 	for i := 0; i < combos; i++ {
-		l := withSlot(base, indet[0].Slot, base.Items[indet[0].Slot]) // shallow copy via withSlot trick on a no-op slot
-		// Re-do as a clean copy of base.
-		l = Loadout{Items: make(map[Slot][]Item, len(base.Items))}
+		l := Loadout{Items: make(map[Slot][]Item, len(base.Items))}
 		for k, v := range base.Items {
 			l.Items[k] = v
 		}
+		picks := map[string]int{}
 		for bit, slot := range indet {
 			pick := slot.TopItem
 			if i&(1<<bit) != 0 {
 				pick = slot.RunnerUp
 			}
 			l.Items[slot.Slot] = []Item{pick}
+			picks[slot.Slot.String()] = pick.ItemID
 		}
 		loadouts[i] = l
 		bodies[i] = BuildProfile(p, l)
+		report.Combos = append(report.Combos, CrossCombo{
+			Index: i,
+			Picks: picks,
+		})
 	}
 
 	scores, err := runFanout(ctx, bodies, fs, iters, runner, tel, indet[0].Slot)
 	if err != nil {
-		return Loadout{}, fmt.Errorf("cross-product refine: %w", err)
+		return Loadout{}, report, fmt.Errorf("cross-product refine: %w", err)
+	}
+	for i, s := range scores {
+		report.Combos[i].DPS = s
 	}
 
 	bestIdx := 0
@@ -116,7 +132,16 @@ func CrossProductRefine(ctx context.Context, p *Profile, base Loadout, results m
 			bestIdx = i
 		}
 	}
-	return loadouts[bestIdx], nil
+	report.WinnerIndex = bestIdx
+
+	// FlippedFromGreedy: any slot whose pick in the winner combo
+	// differs from the greedy top item.
+	for bit, slot := range indet {
+		if bestIdx&(1<<bit) != 0 {
+			report.FlippedFromGreedy = append(report.FlippedFromGreedy, slot.Slot.String())
+		}
+	}
+	return loadouts[bestIdx], report, nil
 }
 
 // MaxCrossProductSims returns the upper-bound sim count for the

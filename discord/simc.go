@@ -358,7 +358,7 @@ func (c *DefaultDiscord) formatSlotChange(ch simc.SlotChange) string {
 func (c *DefaultDiscord) formatGemChange(ch simc.GemChange) string {
 	const slotW = 9
 	indent := strings.Repeat(" ", slotW+2)
-	before := formatGemRef(ch.Before, "")
+	before := formatGemRef(ch.Before, ch.BeforeName)
 	after := formatGemRef(ch.After, ch.Name)
 	return fmt.Sprintf("%-*s  %s\n%s↳ %s",
 		slotW, ch.Slot, before, indent, after,
@@ -369,7 +369,7 @@ func (c *DefaultDiscord) formatGemChange(ch simc.GemChange) string {
 func (c *DefaultDiscord) formatEnchantChange(ch simc.EnchantChange) string {
 	const slotW = 9
 	indent := strings.Repeat(" ", slotW+2)
-	before := formatEnchantRef(ch.Before, "")
+	before := formatEnchantRef(ch.Before, ch.BeforeName)
 	after := formatEnchantRef(ch.After, ch.Name)
 	return fmt.Sprintf("%-*s  %s\n%s↳ %s",
 		slotW, ch.Slot, before, indent, after,

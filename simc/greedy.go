@@ -39,6 +39,27 @@ type GreedySlotResult struct {
 	Scores []float64
 }
 
+// GreedyDoubleSlotResult captures the per-half scoring for a double
+// slot's sequential pick. Both pools are the candidate sets that were
+// sim'd; PrimaryWinner / SecondaryWinner are the items chosen.
+type GreedyDoubleSlotResult struct {
+	PrimaryPool      []Item
+	PrimaryScores    []float64
+	PrimaryWinner    Item
+	SecondaryPool    []Item
+	SecondaryScores  []float64
+	SecondaryWinner  Item
+}
+
+// GreedyResults bundles per-slot scoring data from the final greedy
+// sweep — single slots in Slots, double slots in Doubles. Consumed by
+// the cross-product refinement (single-slot only) and the report
+// writer (both).
+type GreedyResults struct {
+	Slots   map[Slot]GreedySlotResult
+	Doubles map[Slot]GreedyDoubleSlotResult
+}
+
 // TopN returns the top-n indices into Pool sorted by score descending.
 // If n exceeds len(Pool), all indices are returned.
 func (r GreedySlotResult) TopN(n int) []int {
@@ -82,10 +103,13 @@ func (r GreedySlotResult) TopN(n int) []int {
 //     winner. Finger/trinket use sequential picking.
 //  3. If any slot's winner differed from the previous best, do one
 //     refinement sweep. Bail early when a sweep produces no changes.
-func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs FightStyle, iters int, runner SimRunner, onProgress GreedyProgress) (Loadout, map[Slot]GreedySlotResult, GreedyTelemetry, error) {
+func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs FightStyle, iters int, runner SimRunner, onProgress GreedyProgress) (Loadout, GreedyResults, GreedyTelemetry, error) {
 	cur := seedLoadout(p, cands)
 	tel := GreedyTelemetry{}
-	results := make(map[Slot]GreedySlotResult)
+	results := GreedyResults{
+		Slots:   make(map[Slot]GreedySlotResult),
+		Doubles: make(map[Slot]GreedyDoubleSlotResult),
+	}
 
 	const maxPasses = 2
 	for pass := 0; pass < maxPasses; pass++ {
@@ -101,10 +125,11 @@ func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs F
 			}
 
 			if slot.IsDoubleSlot() {
-				slotChanged, err := pickDoubleSlot(ctx, p, cur, slot, items, fs, iters, runner, &tel)
+				dres, slotChanged, err := pickDoubleSlot(ctx, p, cur, slot, items, fs, iters, runner, &tel)
 				if err != nil {
-					return Loadout{}, nil, tel, err
+					return Loadout{}, GreedyResults{}, tel, err
 				}
+				results.Doubles[slot] = dres
 				if slotChanged {
 					changed = true
 				}
@@ -113,9 +138,9 @@ func GreedyOptimize(ctx context.Context, p *Profile, cands map[Slot][]Item, fs F
 
 			res, slotChanged, err := pickSingleSlot(ctx, p, cur, slot, items, fs, iters, runner, &tel)
 			if err != nil {
-				return Loadout{}, nil, tel, err
+				return Loadout{}, GreedyResults{}, tel, err
 			}
-			results[slot] = res
+			results.Slots[slot] = res
 			if slotChanged {
 				changed = true
 			}
@@ -195,13 +220,17 @@ func pickSingleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 // pickDoubleSlot does the sequential pick for finger/trinket: first the
 // "primary" item (held against the equipped secondary), then the
 // "secondary" (held against the freshly-picked primary). Updates cur in
-// place and returns whether either pick differed.
-func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, items []Item, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (bool, error) {
+// place and returns the per-half scoring data plus whether either pick
+// differed.
+func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, items []Item, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (GreedyDoubleSlotResult, bool, error) {
 	prev := append([]Item(nil), cur.Items[slot]...)
+	dres := GreedyDoubleSlotResult{}
 
 	if len(items) < 2 {
 		cur.Items[slot] = []Item{items[0]}
-		return !sameItems(prev, cur.Items[slot]), nil
+		dres.PrimaryPool = []Item{items[0]}
+		dres.PrimaryWinner = items[0]
+		return dres, !sameItems(prev, cur.Items[slot]), nil
 	}
 
 	var heldSecondary Item
@@ -212,10 +241,13 @@ func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 	}
 
 	primaryPool := mergeWithCurrent(items, []Item{cur.Items[slot][0]})
-	winner1, err := bestForDoubleSlot(ctx, p, cur, slot, primaryPool, heldSecondary, true, fs, iters, runner, tel)
+	winner1, primaryScores, err := bestForDoubleSlot(ctx, p, cur, slot, primaryPool, heldSecondary, true, fs, iters, runner, tel)
 	if err != nil {
-		return false, err
+		return dres, false, err
 	}
+	dres.PrimaryPool = primaryPool
+	dres.PrimaryScores = primaryScores
+	dres.PrimaryWinner = winner1
 
 	secondaryItems := excludeByFingerprint(items, winner1)
 	if len(prev) >= 2 && prev[1].fingerprint() != winner1.fingerprint() {
@@ -223,19 +255,23 @@ func pickDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, ite
 	}
 	if len(secondaryItems) == 0 {
 		cur.Items[slot] = []Item{winner1}
-		return !sameItems(prev, cur.Items[slot]), nil
+		return dres, !sameItems(prev, cur.Items[slot]), nil
 	}
-	winner2, err := bestForDoubleSlot(ctx, p, cur, slot, secondaryItems, winner1, false, fs, iters, runner, tel)
+	winner2, secondaryScores, err := bestForDoubleSlot(ctx, p, cur, slot, secondaryItems, winner1, false, fs, iters, runner, tel)
 	if err != nil {
-		return false, err
+		return dres, false, err
 	}
+	dres.SecondaryPool = secondaryItems
+	dres.SecondaryScores = secondaryScores
+	dres.SecondaryWinner = winner2
 	cur.Items[slot] = []Item{winner1, winner2}
-	return !sameItems(prev, cur.Items[slot]), nil
+	return dres, !sameItems(prev, cur.Items[slot]), nil
 }
 
 // bestForDoubleSlot iterates a candidate pool for one half of a double
 // slot, holding `held` in the other half. `primary` controls position.
-func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, pool []Item, held Item, primary bool, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (Item, error) {
+// Returns the winning item and the per-candidate scores.
+func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, pool []Item, held Item, primary bool, fs FightStyle, iters int, runner SimRunner, tel *GreedyTelemetry) (Item, []float64, error) {
 	bodies := make([][]byte, len(pool))
 	for i, c := range pool {
 		var pair []Item
@@ -249,7 +285,7 @@ func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, 
 	}
 	scores, err := runFanout(ctx, bodies, fs, iters, runner, tel, slot)
 	if err != nil {
-		return Item{}, err
+		return Item{}, nil, err
 	}
 	bestIdx := -1
 	bestDPS := -1.0
@@ -260,9 +296,9 @@ func bestForDoubleSlot(ctx context.Context, p *Profile, cur Loadout, slot Slot, 
 		}
 	}
 	if bestIdx < 0 {
-		return Item{}, fmt.Errorf("sim slot %s: no successful candidate", slot)
+		return Item{}, nil, fmt.Errorf("sim slot %s: no successful candidate", slot)
 	}
-	return pool[bestIdx], nil
+	return pool[bestIdx], scores, nil
 }
 
 // runFanout sims the supplied bodies in parallel up to runner.Concurrency()

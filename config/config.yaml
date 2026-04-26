@@ -40,3 +40,4 @@ simc_run:
   progress_every: 50
   progress_min_interval: 2m
   history_size: 5
+  report_dir: /app/data/sim_reports

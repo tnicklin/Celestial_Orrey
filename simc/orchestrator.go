@@ -2,6 +2,9 @@ package simc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -20,6 +23,7 @@ type OrchestratorConfig struct {
 	ProgressEvery       int           `yaml:"progress_every"`
 	ProgressMinInterval time.Duration `yaml:"progress_min_interval"`
 	HistorySize         int           `yaml:"history_size"`
+	ReportDir           string        `yaml:"report_dir"`
 }
 
 // Defaults applies default values to the config.
@@ -105,10 +109,13 @@ type RunResult struct {
 	BaselineProfile  []byte
 	Duration         time.Duration
 	Stats            CombinationStats
+	Report           Report
+	ReportPath       string // filesystem path of the JSON report (when written)
 }
 
 // FightStyleResult holds the baseline + best DPS plus the slot diff for a
-// single fight style.
+// single fight style. Report is the structured per-phase data used by
+// the report writer.
 type FightStyleResult struct {
 	FightStyle     FightStyle
 	BaselineDPS    float64
@@ -120,6 +127,7 @@ type FightStyleResult struct {
 	SlotChanges    []SlotChange
 	GemChanges     []GemChange
 	EnchantChanges []EnchantChange
+	Report         FightStyleReport
 }
 
 // SlotChange describes the per-slot diff between currently equipped and the
@@ -446,22 +454,129 @@ func (s *DefaultOrchestrator) runOnce(ctx context.Context, env *runEnvelope) (*R
 	}
 
 	res.Duration = time.Since(env.info.StartedAt)
+
+	// Assemble + persist the structured report so the
+	// wow-simc-runner-expert agent can iterate over the run.
+	res.Report = s.buildReport(env, profile, res, totalSims)
+	if s.cfg.ReportDir != "" {
+		path, werr := WriteReport(s.cfg.ReportDir, res.Report)
+		if werr != nil {
+			s.logger.WarnW("write sim report", "run", env.info.ID, "error", werr)
+		} else {
+			res.ReportPath = path
+		}
+	}
 	return res, nil
 }
 
-// runFightStyle runs the baseline, the greedy sweep, and the final
-// high-iteration sim on the assembled winning loadout for one style.
+// buildReport assembles the run-level Report from RunInfo + per-style
+// FightStyleResults. Per-phase sims and wallclock are summed across
+// fight styles into Totals.
+func (s *DefaultOrchestrator) buildReport(env *runEnvelope, profile *Profile, res *RunResult, totalSimsBudget int) Report {
+	sum := sha256.Sum256(env.profile)
+	rep := Report{
+		SchemaVersion: ReportSchemaVersion,
+		Run: RunMeta{
+			ID:              uint64(env.info.ID),
+			SubmittedAt:     env.info.SubmittedAt,
+			StartedAt:       env.info.StartedAt,
+			FinishedAt:      env.info.FinishedAt,
+			DurationSeconds: res.Duration.Seconds(),
+			Requester:       env.info.Requester,
+			Character:       profile.CharacterName(),
+			Realm:           profile.Realm(),
+			Region:          profile.Region(),
+			Class:           profile.ClassName(),
+			Spec:            profile.Spec(),
+			MainStat:        MainStatFor(profile.ClassName(), profile.Spec()),
+			StatPriority:    StatPriorityFor(profile.ClassName(), profile.Spec()),
+		},
+		Config: ConfigSnapshot{
+			RankPassIterations:        s.cfg.RankPassIterations,
+			FinalPassIterations:       s.cfg.FinalPassIterations,
+			RankTargetError:           s.cfg.RankTargetError,
+			QueueWorkers:              s.queue.Concurrency(),
+			IndeterminateThresholdPct: IndeterminateThreshold * 100,
+			MaxCrossProductSlots:      MaxCrossProductSlots,
+		},
+		Input: InputSummary{
+			ProfileBytes:      len(env.profile),
+			ProfileSHA256:     hex.EncodeToString(sum[:]),
+			ProfileB64:        base64.StdEncoding.EncodeToString(env.profile),
+			CandidatesPerSlot: candidatesPerSlot(profile.CandidatesBySlot()),
+			Warnings: InputWarnings{
+				NoHeroOrMyth: slotNames(res.Stats.Empty),
+				FewerThanTwo: slotNames(res.Stats.DoubleEmpty),
+			},
+		},
+		FightStyles: map[FightStyle]FightStyleReport{
+			FightStylePatchwerk:    res.Patchwerk.Report,
+			FightStyleDungeonSlice: res.DungeonSlice.Report,
+		},
+	}
+	rep.Totals = aggregateTotals(rep.FightStyles)
+	return rep
+}
+
+func candidatesPerSlot(cands map[Slot][]Item) map[string]int {
+	out := make(map[string]int, len(cands))
+	for slot, items := range cands {
+		out[slot.String()] = len(items)
+	}
+	return out
+}
+
+func slotNames(slots []Slot) []string {
+	out := make([]string, 0, len(slots))
+	for _, s := range slots {
+		out = append(out, s.String())
+	}
+	return out
+}
+
+func aggregateTotals(per map[FightStyle]FightStyleReport) Totals {
+	t := Totals{
+		SimsPerPhase:             map[string]int{},
+		WallclockPerPhaseSeconds: map[string]float64{},
+	}
+	for _, r := range per {
+		for k, v := range r.Phases.SimsByPhase {
+			t.SimsPerPhase[k] += v
+			t.SimsRun += v
+		}
+		for k, v := range r.Phases.WallclockSecondsByPhase {
+			t.WallclockPerPhaseSeconds[k] += v
+		}
+	}
+	return t
+}
+
+// runFightStyle runs the full pipeline (baseline → greedy → cross-product
+// refine → gem/enchant → final pass) for one fight style and assembles
+// the per-style report.
 func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelope, profile *Profile, baseline []byte, cands map[Slot][]Item, fs FightStyle) (FightStyleResult, error) {
 	out := FightStyleResult{FightStyle: fs}
+	report := FightStyleReport{
+		Style: fs,
+	}
+	timings := make(map[string]float64)
+	simsPerPhase := make(map[string]int)
 
+	// Baseline.
+	t0 := time.Now()
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("baseline (%s)", fs) })
 	baselineRes, err := s.runOne(ctx, env, baseline, fs, s.cfg.FinalPassIterations, 0)
 	if err != nil {
 		return out, fmt.Errorf("baseline: %w", err)
 	}
 	out.BaselineDPS = baselineRes.DPS
+	report.BaselineDPS = baselineRes.DPS
+	report.NoiseFloorDPS = baselineRes.DPS * s.cfg.RankTargetError / 100
 	s.bumpCompleted(env)
+	timings["baseline"] = time.Since(t0).Seconds()
+	simsPerPhase["baseline"] = 1
 
+	// Greedy sweep.
 	lastProgress := time.Now()
 	progress := func(pass int, slot Slot, slotIdx, slotsTotal int) {
 		if time.Since(lastProgress) < s.cfg.ProgressMinInterval {
@@ -475,43 +590,263 @@ func (s *DefaultOrchestrator) runFightStyle(ctx context.Context, env *runEnvelop
 	}
 
 	runner := &orchestratorRunner{orch: s, env: env, targetError: s.cfg.RankTargetError}
-	bestLoadout, slotResults, _, err := GreedyOptimize(ctx, profile, cands, fs, s.cfg.RankPassIterations, runner, progress)
+	t0 = time.Now()
+	bestLoadout, slotResults, greedyTel, err := GreedyOptimize(ctx, profile, cands, fs, s.cfg.RankPassIterations, runner, progress)
 	if err != nil {
 		return out, fmt.Errorf("greedy: %w", err)
 	}
+	report.Greedy = buildGreedyReport(greedyTel.PassesRun, slotResults)
+	timings["greedy"] = time.Since(t0).Seconds()
+	simsPerPhase["greedy"] = greedyTel.SimsRun
 
+	// Cross-product refine.
+	t0 = time.Now()
+	postTel := &GreedyTelemetry{}
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("refine (%s)", fs) })
-	tel := &GreedyTelemetry{}
-	refined, err := CrossProductRefine(ctx, profile, bestLoadout, slotResults, fs, s.cfg.RankPassIterations, runner, tel)
+	refined, crossReport, err := CrossProductRefine(ctx, profile, bestLoadout, slotResults.Slots, fs, s.cfg.RankPassIterations, runner, postTel)
 	if err != nil {
 		return out, fmt.Errorf("cross-product refine: %w", err)
 	}
+	report.CrossProduct = crossReport
+	timings["cross_product"] = time.Since(t0).Seconds()
+	simsPerPhase["cross_product"] = postTel.SimsRun
 
+	// Gem + enchant.
+	t0 = time.Now()
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("gems + enchants (%s)", fs) })
-	gemEnchanted, gemChanges, enchantChanges, err := OptimizeGemsAndEnchants(ctx, profile, refined, fs, s.cfg.RankPassIterations, runner, tel)
+	geTel := &GreedyTelemetry{}
+	gemOutcome, err := OptimizeGemsAndEnchants(ctx, profile, refined, fs, s.cfg.RankPassIterations, runner, geTel)
 	if err != nil {
 		return out, fmt.Errorf("gem/enchant: %w", err)
 	}
+	report.GemPhase = gemOutcome.GemPhase
+	report.EnchantPhase = gemOutcome.EnchantPhase
+	timings["gem"] = time.Since(t0).Seconds() * float64(gemOutcome.SimsGem) / float64(maxInt(gemOutcome.SimsGem+gemOutcome.SimsEnchant, 1))
+	timings["enchant"] = time.Since(t0).Seconds() - timings["gem"]
+	simsPerPhase["gem"] = gemOutcome.SimsGem
+	simsPerPhase["enchant"] = gemOutcome.SimsEnchant
 
+	// Final pass.
+	t0 = time.Now()
 	s.updateInfo(env, func(i *RunInfo) { i.Phase = fmt.Sprintf("final pass (%s)", fs) })
-	bestProfile := BuildProfile(profile, gemEnchanted)
+	bestProfile := BuildProfile(profile, gemOutcome.Loadout)
 	finalRes, err := s.runOne(ctx, env, bestProfile, fs, s.cfg.FinalPassIterations, 0)
 	if err != nil {
 		return out, fmt.Errorf("final pass: %w", err)
 	}
 	s.bumpCompleted(env)
+	finalDur := time.Since(t0).Seconds()
+	timings["final"] = finalDur
+	simsPerPhase["final"] = 1
 
-	out.BestLoadout = gemEnchanted
+	report.FinalPass = FinalPassReport{
+		Iterations:      s.cfg.FinalPassIterations,
+		TargetError:     0,
+		DPS:             finalRes.DPS,
+		DurationSeconds: finalDur,
+	}
+
+	out.BestLoadout = gemOutcome.Loadout
 	out.BestDPS = finalRes.DPS
 	out.DeltaDPS = finalRes.DPS - out.BaselineDPS
 	if out.BaselineDPS > 0 {
 		out.DeltaPct = out.DeltaDPS / out.BaselineDPS * 100
 	}
 	out.BestProfile = bestProfile
-	out.SlotChanges = computeSlotChanges(profile, gemEnchanted)
-	out.GemChanges = gemChanges
-	out.EnchantChanges = enchantChanges
+	out.SlotChanges = computeSlotChanges(profile, gemOutcome.Loadout)
+	out.GemChanges = gemOutcome.GemChanges
+	out.EnchantChanges = gemOutcome.EnchantChanges
+
+	report.BestDPS = finalRes.DPS
+	report.DeltaDPS = out.DeltaDPS
+	report.DeltaPct = out.DeltaPct
+	report.WinningLoadout = buildLoadoutReport(gemOutcome.Loadout, bestProfile)
+	report.Diff = DiffReport{
+		SlotChanges:    out.SlotChanges,
+		GemChanges:     out.GemChanges,
+		EnchantChanges: out.EnchantChanges,
+	}
+	out.Report = report
+	out.Report.Phases = PhaseStats{
+		SimsByPhase:             simsPerPhase,
+		WallclockSecondsByPhase: timings,
+	}
 	return out, nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// buildGreedyReport translates the per-slot scoring data captured by
+// GreedyOptimize into a GreedyReport — single slots get a candidates
+// list with rank/winner; double slots get split primary/secondary
+// pools.
+func buildGreedyReport(passesRun int, results GreedyResults) GreedyReport {
+	rep := GreedyReport{PassesRun: passesRun}
+	for _, slot := range slotOrder {
+		if res, ok := results.Slots[slot]; ok && len(res.Pool) > 0 {
+			rep.SlotPicks = append(rep.SlotPicks, buildSingleSlotPick(slot, res))
+			continue
+		}
+		if res, ok := results.Doubles[slot]; ok && len(res.PrimaryPool) > 0 {
+			rep.SlotPicks = append(rep.SlotPicks, buildDoubleSlotPick(slot, res))
+		}
+	}
+	return rep
+}
+
+func buildSingleSlotPick(slot Slot, res GreedySlotResult) SlotPick {
+	candidates := make([]SlotCandidate, len(res.Pool))
+	rank := rankIndices(res.Scores)
+	bestIdx, runnerUpIdx := topTwoIndices(res.Scores)
+	for i, it := range res.Pool {
+		candidates[i] = SlotCandidate{
+			ItemID: it.ItemID,
+			Name:   it.Name,
+			Ilvl:   it.EffectiveIlvl(),
+			Track:  it.Track.String(),
+			DPS:    res.Scores[i],
+			Rank:   rank[i],
+		}
+	}
+	pick := SlotPick{
+		Slot:       slot.String(),
+		Method:     "single",
+		PoolSize:   len(res.Pool),
+		Candidates: candidates,
+	}
+	if bestIdx >= 0 {
+		pick.WinnerID = res.Pool[bestIdx].ItemID
+	}
+	if runnerUpIdx >= 0 {
+		pick.RunnerUpID = res.Pool[runnerUpIdx].ItemID
+		gap := res.Scores[bestIdx] - res.Scores[runnerUpIdx]
+		pick.GapDPS = gap
+		if res.Scores[bestIdx] > 0 {
+			pick.GapPct = gap / res.Scores[bestIdx] * 100
+			pick.Indeterminate = pick.GapPct < IndeterminateThreshold*100
+		}
+	}
+	return pick
+}
+
+func buildDoubleSlotPick(slot Slot, res GreedyDoubleSlotResult) SlotPick {
+	pick := SlotPick{
+		Slot:     slot.String(),
+		Method:   "sequential_double_slot",
+		PoolSize: len(res.PrimaryPool) + len(res.SecondaryPool),
+	}
+	if len(res.PrimaryPool) > 0 {
+		pick.PrimaryPool = candidatesFromPool(res.PrimaryPool, res.PrimaryScores)
+		if c := findCandidate(pick.PrimaryPool, res.PrimaryWinner.ItemID); c != nil {
+			cp := *c
+			pick.PrimaryPick = &cp
+		}
+	}
+	if len(res.SecondaryPool) > 0 {
+		pick.SecondaryPool = candidatesFromPool(res.SecondaryPool, res.SecondaryScores)
+		if c := findCandidate(pick.SecondaryPool, res.SecondaryWinner.ItemID); c != nil {
+			cp := *c
+			pick.SecondaryPick = &cp
+		}
+	}
+	return pick
+}
+
+func candidatesFromPool(pool []Item, scores []float64) []SlotCandidate {
+	out := make([]SlotCandidate, len(pool))
+	rank := rankIndices(scores)
+	for i, it := range pool {
+		var dps float64
+		if i < len(scores) {
+			dps = scores[i]
+		}
+		out[i] = SlotCandidate{
+			ItemID: it.ItemID,
+			Name:   it.Name,
+			Ilvl:   it.EffectiveIlvl(),
+			Track:  it.Track.String(),
+			DPS:    dps,
+			Rank:   rank[i],
+		}
+	}
+	return out
+}
+
+func findCandidate(pool []SlotCandidate, itemID int) *SlotCandidate {
+	for i := range pool {
+		if pool[i].ItemID == itemID {
+			return &pool[i]
+		}
+	}
+	return nil
+}
+
+// rankIndices returns rank[i] = 1-based rank of scores[i] in
+// descending order. Stable on ties (earlier index wins ties).
+func rankIndices(scores []float64) []int {
+	type kv struct {
+		i int
+		s float64
+	}
+	pairs := make([]kv, len(scores))
+	for i, s := range scores {
+		pairs[i] = kv{i, s}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].s > pairs[j].s })
+	out := make([]int, len(scores))
+	for r, p := range pairs {
+		out[p.i] = r + 1
+	}
+	return out
+}
+
+func topTwoIndices(scores []float64) (best, runnerUp int) {
+	best, runnerUp = -1, -1
+	for i, s := range scores {
+		if best < 0 || s > scores[best] {
+			runnerUp = best
+			best = i
+			continue
+		}
+		if runnerUp < 0 || s > scores[runnerUp] {
+			runnerUp = i
+		}
+	}
+	return
+}
+
+// buildLoadoutReport renders a Loadout into the report's slot-keyed
+// shape. profileBytes is the simc body used for the final pass; it
+// gets base64'd inline.
+func buildLoadoutReport(l Loadout, profileBytes []byte) LoadoutReport {
+	out := LoadoutReport{
+		Slots:      make(map[string][]LoadoutItem, len(l.Items)),
+		ProfileB64: base64.StdEncoding.EncodeToString(profileBytes),
+	}
+	for _, slot := range slotOrder {
+		items, ok := l.Items[slot]
+		if !ok {
+			continue
+		}
+		var entries []LoadoutItem
+		for _, it := range items {
+			entries = append(entries, LoadoutItem{
+				ItemID:    it.ItemID,
+				Name:      it.Name,
+				Ilvl:      it.EffectiveIlvl(),
+				Track:     it.Track.String(),
+				GemIDs:    it.GemIDs,
+				EnchantID: it.EnchantID,
+			})
+		}
+		out.Slots[slot.String()] = entries
+	}
+	return out
 }
 
 // orchestratorRunner adapts the orchestrator's queue.Submit/Subscribe
