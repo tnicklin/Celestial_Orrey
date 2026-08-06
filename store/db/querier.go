@@ -21,7 +21,6 @@ type Querier interface {
 	GetCharacterAliasID(ctx context.Context, aliasName string) (int64, error)
 	GetCharacterID(ctx context.Context, arg GetCharacterIDParams) (int64, error)
 	GetElvUIVersion(ctx context.Context) (GetElvUIVersionRow, error)
-	GetItemName(ctx context.Context, itemID int64) (string, error)
 	InsertCharacterAliasMember(ctx context.Context, arg InsertCharacterAliasMemberParams) error
 	InsertCompletedKey(ctx context.Context, arg InsertCompletedKeyParams) error
 	InsertWarcraftLogsLink(ctx context.Context, arg InsertWarcraftLogsLinkParams) error
@@ -29,7 +28,6 @@ type Querier interface {
 	ListAliases(ctx context.Context) ([]string, error)
 	ListAllKeysWithCharacters(ctx context.Context) ([]ListAllKeysWithCharactersRow, error)
 	ListCharacters(ctx context.Context) ([]ListCharactersRow, error)
-	ListItemNames(ctx context.Context) ([]ItemName, error)
 	ListKeysByCharacterSince(ctx context.Context, arg ListKeysByCharacterSinceParams) ([]ListKeysByCharacterSinceRow, error)
 	ListKeysSince(ctx context.Context, completedAt string) ([]ListKeysSinceRow, error)
 	ListUnlinkedKeysSince(ctx context.Context, completedAt string) ([]ListUnlinkedKeysSinceRow, error)
@@ -38,7 +36,6 @@ type Querier interface {
 	UpsertCharacter(ctx context.Context, arg UpsertCharacterParams) (int64, error)
 	UpsertCharacterAlias(ctx context.Context, aliasName string) (int64, error)
 	UpsertElvUIVersion(ctx context.Context, arg UpsertElvUIVersionParams) error
-	UpsertItemName(ctx context.Context, arg UpsertItemNameParams) error
 }
 
 var _ Querier = (*Queries)(nil)

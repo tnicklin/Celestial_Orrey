@@ -48,9 +48,6 @@ type Store interface {
 	UpsertElvUIVersion(ctx context.Context, v ElvUIVersion) error
 	GetElvUIVersion(ctx context.Context) (*ElvUIVersion, error)
 
-	GetItemName(ctx context.Context, itemID int64) (string, error)
-	UpsertItemName(ctx context.Context, itemID int64, name string) error
-
 	SetAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
 	AddAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error
 	RemoveAliasCharacters(ctx context.Context, aliasName string, characters []models.Character) error

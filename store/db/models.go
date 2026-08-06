@@ -47,12 +47,6 @@ type ElvuiVersion struct {
 	CheckedAt    string `json:"checked_at"`
 }
 
-type ItemName struct {
-	ItemID   int64  `json:"item_id"`
-	Name     string `json:"name"`
-	CachedAt string `json:"cached_at"`
-}
-
 type WarcraftlogsLink struct {
 	ID         int64          `json:"id"`
 	KeyID      int64          `json:"key_id"`

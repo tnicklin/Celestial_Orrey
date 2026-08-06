@@ -13,7 +13,6 @@ import (
 	"github.com/tnicklin/celestial_orrey/logger"
 	"github.com/tnicklin/celestial_orrey/models"
 	rioClient "github.com/tnicklin/celestial_orrey/raiderio/client"
-	"github.com/tnicklin/celestial_orrey/simc"
 	"github.com/tnicklin/celestial_orrey/store"
 	"github.com/tnicklin/celestial_orrey/timeutil"
 	"github.com/tnicklin/celestial_orrey/warcraftlogs"
@@ -48,10 +47,6 @@ type DefaultDiscord struct {
 	store         store.Store
 	raiderIO      rioClient.Client
 	warcraftLogs  warcraftlogs.WCL
-	simcQueue     simc.Queue
-	simcOrch       simc.Orchestrator
-	simcConfig    simc.Config
-	simcNames     simc.NameResolver
 	logger        logger.Logger
 	clock         clock.Clock
 	removeHandler func()
@@ -64,10 +59,6 @@ type Params struct {
 	Store        store.Store
 	RaiderIO     rioClient.Client
 	WarcraftLogs warcraftlogs.WCL
-	SimcQueue    simc.Queue
-	SimcOrch      simc.Orchestrator
-	SimcConfig   simc.Config
-	SimcNames    simc.NameResolver
 	Logger       logger.Logger
 	Clock        clock.Clock
 }
@@ -85,11 +76,6 @@ func New(p Params) (*DefaultDiscord, error) {
 		clk = clock.System()
 	}
 
-	names := p.SimcNames
-	if names == nil {
-		names = simc.NewNoopNameResolver()
-	}
-
 	return &DefaultDiscord{
 		session:       session,
 		guildID:       cfg.GuildID,
@@ -97,10 +83,6 @@ func New(p Params) (*DefaultDiscord, error) {
 		store:         p.Store,
 		raiderIO:      p.RaiderIO,
 		warcraftLogs:  p.WarcraftLogs,
-		simcQueue:     p.SimcQueue,
-		simcOrch:       p.SimcOrch,
-		simcConfig:    p.SimcConfig,
-		simcNames:     names,
 		logger:        p.Logger,
 		clock:         clk,
 	}, nil
@@ -186,7 +168,6 @@ const (
 	_cmdScores      = "scores"
 	_cmdChar        = "char"
 	_cmdElv         = "elv"
-	_cmdSimc        = "simc"
 	_cmdHelp        = "help"
 )
 
@@ -247,8 +228,6 @@ func (c *DefaultDiscord) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		resp = cmdResponse{content: s}
 	case _cmdElv:
 		resp, err = c.cmdElv(ctx)
-	case _cmdSimc:
-		resp, err = c.cmdSimc(ctx, m, args)
 	case _cmdHelp:
 		resp = cmdResponse{content: c.cmdHelp()}
 	default:
@@ -863,8 +842,6 @@ MANAGEMENT
 
 OTHER
   !elv                       - Show current ElvUI version
-  !simc <run|status|stats|cancel>
-                             - Sim simulator (see !simc help)
   !help                      - Show this help message
 ` + "```"
 }
