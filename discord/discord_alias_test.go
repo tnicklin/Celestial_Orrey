@@ -75,7 +75,7 @@ func TestCmdCharAliasAllowsAliasNameMatchingCharacterName(t *testing.T) {
 	if len(reportResp.embeds) != 1 {
 		t.Fatalf("expected one report alias embed, got %#v", reportResp)
 	}
-	if reportResp.embeds[0].Title != "Great Vault Progress (askr)" {
+	if reportResp.embeds[0].Title != "Key Counter (askr)" {
 		t.Fatalf("unexpected report alias title: %q", reportResp.embeds[0].Title)
 	}
 	if !strings.Contains(reportResp.embeds[0].Description, "askr") || !strings.Contains(reportResp.embeds[0].Description, "xtein") {
@@ -247,7 +247,7 @@ func TestCmdScoresReturnsAliasScoreLeaderboard(t *testing.T) {
 	}
 }
 
-func TestBuildDailyAnnouncementResponsesOrdersScoreThenVault(t *testing.T) {
+func TestBuildDailyAnnouncementResponsesOrdersScoreThenReport(t *testing.T) {
 	ctx := context.Background()
 	st := newAliasTestStore(t, ctx)
 
@@ -293,8 +293,86 @@ func TestBuildDailyAnnouncementResponsesOrdersScoreThenVault(t *testing.T) {
 	if responses[0].embeds[0].Title != "Season Score Leaderboard" {
 		t.Fatalf("expected score leaderboard first, got %#v", responses[0].embeds[0].Title)
 	}
-	if responses[1].embeds[0].Title != "Great Vault Progress" {
-		t.Fatalf("expected vault progress second, got %#v", responses[1].embeds[0].Title)
+	if responses[1].embeds[0].Title != "Key Counter" {
+		t.Fatalf("expected key counter second, got %#v", responses[1].embeds[0].Title)
+	}
+}
+
+func TestCmdReportOmitsCharactersWithoutKeys(t *testing.T) {
+	ctx := context.Background()
+	st := newAliasTestStore(t, ctx)
+
+	seedAliasTestCharacter(t, ctx, st, models.CompletedKey{
+		KeyID:       9001,
+		Character:   "askr",
+		Region:      "us",
+		Realm:       "malganis",
+		Dungeon:     "Operation: Floodgate",
+		KeyLevel:    12,
+		RunTimeMS:   1400000,
+		ParTimeMS:   1500000,
+		CompletedAt: "2026-03-04T03:00:00Z",
+		Source:      "raiderio",
+	})
+	if err := st.EnsureCharacter(ctx, "idle", "malganis", "us"); err != nil {
+		t.Fatalf("ensure character: %v", err)
+	}
+
+	bot := &DefaultDiscord{
+		store: st,
+		clock: fixedClock{now: time.Date(2026, time.March, 8, 12, 0, 0, 0, _pstLocation)},
+	}
+
+	resp, err := bot.cmdReport(ctx, nil)
+	if err != nil {
+		t.Fatalf("cmdReport: %v", err)
+	}
+	if len(resp.embeds) != 1 {
+		t.Fatalf("expected one report embed, got %#v", resp)
+	}
+	if resp.embeds[0].Title != "Key Counter" {
+		t.Fatalf("unexpected report title: %q", resp.embeds[0].Title)
+	}
+
+	desc := resp.embeds[0].Description
+	if !strings.Contains(desc, "askr") {
+		t.Fatalf("expected report to include character with keys, got %q", desc)
+	}
+	if strings.Contains(desc, "idle") {
+		t.Fatalf("expected report to omit character without keys, got %q", desc)
+	}
+	if strings.Contains(desc, "Vault") {
+		t.Fatalf("expected report to not mention vault, got %q", desc)
+	}
+}
+
+func TestCmdReportShowsNoKeysCompletedWhenWeekIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	st := newAliasTestStore(t, ctx)
+
+	if err := st.EnsureCharacter(ctx, "idle", "malganis", "us"); err != nil {
+		t.Fatalf("ensure character: %v", err)
+	}
+
+	bot := &DefaultDiscord{
+		store: st,
+		clock: fixedClock{now: time.Date(2026, time.March, 8, 12, 0, 0, 0, _pstLocation)},
+	}
+
+	resp, err := bot.cmdReport(ctx, nil)
+	if err != nil {
+		t.Fatalf("cmdReport: %v", err)
+	}
+	if len(resp.embeds) != 1 {
+		t.Fatalf("expected one report embed, got %#v", resp)
+	}
+
+	desc := resp.embeds[0].Description
+	if !strings.Contains(desc, "Week of") || !strings.Contains(desc, "No keys completed") {
+		t.Fatalf("expected empty week message under week header, got %q", desc)
+	}
+	if strings.Contains(desc, "```") {
+		t.Fatalf("expected no table for empty week, got %q", desc)
 	}
 }
 

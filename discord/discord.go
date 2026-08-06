@@ -491,7 +491,7 @@ func (c *DefaultDiscord) writeKeyLines(ctx context.Context, sb *strings.Builder,
 	}
 }
 
-// cmdReport handles the !report command for weekly vault progress.
+// cmdReport handles the !report command for weekly completed key counts.
 // Usage: !report [character_name]
 func (c *DefaultDiscord) cmdReport(ctx context.Context, args []string) (cmdResponse, error) {
 	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
@@ -529,8 +529,8 @@ func (c *DefaultDiscord) cmdReportAlias(ctx context.Context, args []string) (cmd
 	resetTime := timeutil.WeeklyResetAt(c.clock.Now())
 	return c.formatReportForCharacters(
 		ctx,
-		fmt.Sprintf("Great Vault Progress (%s)", args[0]),
-		fmt.Sprintf("No Great Vault data found for alias **%s**.", args[0]),
+		fmt.Sprintf("Key Counter (%s)", args[0]),
+		fmt.Sprintf("No characters found for alias **%s**.", args[0]),
 		chars,
 		resetTime,
 		nil,
@@ -559,7 +559,7 @@ func (c *DefaultDiscord) formatCharacterReport(ctx context.Context, name string,
 		return matchingChars[i].Realm < matchingChars[j].Realm
 	})
 
-	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No Great Vault data available.", matchingChars, since, nil)
+	return c.formatReportForCharacters(ctx, "Key Counter", "No characters found.", matchingChars, since, nil)
 }
 
 func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since time.Time) (cmdResponse, error) {
@@ -574,7 +574,7 @@ func (c *DefaultDiscord) formatAllCharactersReport(ctx context.Context, since ti
 		return cmdResponse{}, err
 	}
 
-	return c.formatReportForCharacters(ctx, "Great Vault Progress", "No characters in database.", allChars, since, charAliases)
+	return c.formatReportForCharacters(ctx, "Key Counter", "No characters in database.", allChars, since, charAliases)
 }
 
 func (c *DefaultDiscord) formatReportForCharacters(
@@ -601,9 +601,14 @@ func (c *DefaultDiscord) formatReportForCharacters(
 		return cmdResponse{content: emptyMessage}, nil
 	}
 
+	block := c.buildReportBlock(ctx, allChars, since, charAliases)
+	if block == "" {
+		block = "No keys completed"
+	}
+
 	embed := &discordgo.MessageEmbed{
 		Title:       title,
-		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), c.buildReportBlock(ctx, allChars, since, charAliases)),
+		Description: fmt.Sprintf("Week of %s\n%s", since.Format("Jan 2"), block),
 		Color:       embedColor,
 	}
 
@@ -698,7 +703,6 @@ type reportEntry struct {
 	realm    string
 	region   string
 	keyCount int
-	vault    string // "M4/M3/--"
 }
 
 // charKey returns a unique identifier for grouping by alias.
@@ -707,6 +711,8 @@ func (e reportEntry) charKey() string {
 }
 
 // buildReportBlock collects character data and formats it as an aligned code block table.
+// Characters with no completed keys this week are omitted; returns "" when no character
+// has completed a key.
 // When charAliases is non-nil, characters are grouped by alias with unaliased characters at the bottom.
 func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Character, since time.Time, charAliases map[string]string) string {
 	var entries []reportEntry
@@ -726,23 +732,24 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 			}
 		}
 
-		sortKeysByLevel(charKeys)
+		if len(charKeys) == 0 {
+			continue
+		}
 
 		if len(char.Name) > maxNameLen {
 			maxNameLen = len(char.Name)
 		}
-
-		v1 := vaultShortCode(charKeys, 0)
-		v2 := vaultShortCode(charKeys, 3)
-		v3 := vaultShortCode(charKeys, 7)
 
 		entries = append(entries, reportEntry{
 			name:     char.Name,
 			realm:    char.Realm,
 			region:   char.Region,
 			keyCount: len(charKeys),
-			vault:    fmt.Sprintf("%s/%s/%s", v1, v2, v3),
 		})
+	}
+
+	if len(entries) == 0 {
+		return ""
 	}
 
 	// Ensure name column is at least as wide as "Name" header
@@ -750,13 +757,13 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 		maxNameLen = 4
 	}
 
-	rowFmt := fmt.Sprintf("%%-%ds | %%4s | %%s\n", maxNameLen)
+	rowFmt := fmt.Sprintf("%%-%ds | %%4s\n", maxNameLen)
 
 	var sb strings.Builder
 	sb.WriteString("```\n")
-	sb.WriteString(fmt.Sprintf(rowFmt, "Name", "Keys", "Vault"))
-	sb.WriteString(fmt.Sprintf("%s-|-%s-|-%s\n",
-		strings.Repeat("-", maxNameLen), "----", "-----------"))
+	sb.WriteString(fmt.Sprintf(rowFmt, "Name", "Keys"))
+	sb.WriteString(fmt.Sprintf("%s-|-%s\n",
+		strings.Repeat("-", maxNameLen), "----"))
 
 	if len(charAliases) > 0 {
 		// Group entries by alias.
@@ -784,38 +791,23 @@ func (c *DefaultDiscord) buildReportBlock(ctx context.Context, chars []models.Ch
 			sb.WriteString(alias + "\n")
 			for _, e := range group {
 				sb.WriteString(fmt.Sprintf(rowFmt,
-					e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+					e.name, fmt.Sprintf("%d", e.keyCount)))
 			}
 			sb.WriteString("\n")
 		}
 		for _, e := range unaliased {
 			sb.WriteString(fmt.Sprintf(rowFmt,
-				e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+				e.name, fmt.Sprintf("%d", e.keyCount)))
 		}
 	} else {
 		for _, e := range entries {
 			sb.WriteString(fmt.Sprintf(rowFmt,
-				e.name, fmt.Sprintf("%d", e.keyCount), e.vault))
+				e.name, fmt.Sprintf("%d", e.keyCount)))
 		}
 	}
 
 	sb.WriteString("```")
 	return sb.String()
-}
-
-// vaultShortCode returns the item level for a vault slot, or "--" if empty.
-func vaultShortCode(keys []models.CompletedKey, index int) string {
-	if index >= len(keys) {
-		return "---"
-	}
-	return fmt.Sprintf("%d", VaultRewards.GetItemLevel(keys[index].KeyLevel))
-}
-
-// sortKeysByLevel sorts keys by KeyLevel descending (highest first)
-func sortKeysByLevel(keys []models.CompletedKey) {
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].KeyLevel > keys[j].KeyLevel
-	})
 }
 
 func (c *DefaultDiscord) cmdElv(ctx context.Context) (cmdResponse, error) {
@@ -858,9 +850,9 @@ REPORTS
   !keys <name>               - Show keys for a character
   !keys all                  - Show all keys completed this week
   !keys-a <alias>            - Show keys for all characters in an alias
-  !report                    - Show Great Vault progress for all characters
-  !report <name>             - Show Great Vault progress for a character
-  !report-a <alias>          - Show Great Vault progress for an alias
+  !report                    - Show key counter for all characters
+  !report <name>             - Show key counter for a character
+  !report-a <alias>          - Show key counter for an alias
 
 MANAGEMENT
   !char sync <name> <realm>  - Sync character from RaiderIO
